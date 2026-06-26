@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Escape the Backrooms on WebGPU</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+        #canvas { width: 100%; height: 100%; display: block; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+
+    <script type="module">
+        // Cloudflare PagesからデプロイされたWasmモジュールとMockをインポート
+        import init, { EscapeSteamMock } from './pkg/escape_the_backrooms_on_webgpu.js';
+
+        // ==========================================
+        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化
+        // ==========================================
+        const dbRequest = indexedDB.open("WebGPUShaderCache", 1);
+        dbRequest.onupgradeneeded = () => dbRequest.result.createObjectStore("shaders");
+
+        if (window.GPUDevice) {
+            GPUDevice.prototype.createRenderPipelineAsync = async function(descriptor) {
+                const db = dbRequest.result;
+                // シェーダーの文字コードをキーにして一意に識別
+                const cacheKey = JSON.stringify(descriptor.vertex.module.code + (descriptor.fragment?.module.code || ""));
+                
+                // IndexedDBから過去のコンパイル済みバイナリを高速検索
+                const cachedBlob = await new Promise(r => {
+                    const tx = db.transaction("shaders", "readonly");
+                    tx.objectStore("shaders").get(cacheKey).onsuccess = e => r(e.target.result);
+                });
+
+                if (cachedBlob) {
+                    // 【ワープ】コンパイルを完全スキップし、ハードウェアキャッシュから即時展開
+                    descriptor.pipelineCache = await this.createPipelineCache({ blob: cachedBlob });
+                }
+                
+                const pipeline = await GPUDevice.prototype.createRenderPipeline.call(this, descriptor);
+                
+                // 初回コンパイルだった場合、完成バイナリを抽出してIndexedDBに永続保存
+                if (!cachedBlob && pipeline.cache) {
+                    const blob = await pipeline.cache.getBlob();
+                    const tx = db.transaction("shaders", "readwrite");
+                    tx.objectStore("shaders").put(blob, cacheKey);
+                }
+                return pipeline;
+            };
+        }
+
+        // ==========================================
+        // ハック②：STUN/TURN完全排除 ✕ IPv6ダイレクトP2P
+        // ==========================================
+        let peerConnection = null;
+        let dataChannel = null;
+
+        function initWebRTCP2P(targetIPv6 = null) {
+            // ICEサーバーを「完全に空っぽ」に固定。STUN/TURNへの無駄な通信を物理的に遮断
+            const config = { iceServers: [], iceTransportPolicy: 'all' };
+            peerConnection = new RTCPeerConnection(config);
+
+            if (!targetIPv6) {
+                // ホスト（あなた）側：データチャンネルを開いて接続を待つ
+                dataChannel = peerConnection.createDataChannel("v6GameTunnel", { ordered: false }); // UDPモード
+                setupDataChannel(dataChannel);
+            } else {
+                // クライアント（友達）側：ホストが生成したオファーをIPv6直撃で受ける設定
+                peerConnection.ondatachannel = (event) => {
+                    dataChannel = event.channel;
+                    setupDataChannel(dataChannel);
+                };
+            }
+        }
+
+        function setupDataChannel(channel) {
+            channel.onmessage = (event) => {
+                // 友達から届いた生のゲームパケットを、Wasm内のゲーム（.exe）のメモリへ直接インジェクション！
+                // 本来Steamネットワークがやる仕事を、JavaScriptが1行で完全代行
+                window.inject_packet_to_game(new Uint8Array(event.data));
+            };
+        }
+
+        // Rust（Mock）側から呼ばれるグローバル通信関数の配線
+        window.js_webrtc_send_packet = (target_id, packetData) => {
+            if (dataChannel && dataChannel.readyState === "open") {
+                // ゲームが放った生パケットを、そのままIPv6の土管へストレート射出（オーバーヘッド0%）
+                dataChannel.send(packetData);
+            }
+        };
+
+        window.js_trigger_steam_callback = (callback_id, param) => {
+            console.log(`[Steam Callback] ID: ${callback_id}, Param: ${param}`);
+            // ここでWasm側のゲームエンジンへイベントを通知
+        };
+
+        // アプリケーションの起動
+        async function run() {
+            await init(); // Wasmのロード
+            initWebRTCP2P(); // サーバー0円のIPv6 P2P網開通
+            console.log("Escape the Backrooms on WebGPU: 準備完了");
+        }
+        run();
+    </script>
+</body>
+</html>
