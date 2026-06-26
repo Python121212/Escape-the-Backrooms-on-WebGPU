@@ -13,35 +13,30 @@
     <canvas id="canvas"></canvas>
 
     <script type="module">
-        // Cloudflare PagesからデプロイされたWasmモジュールとMockをインポート
-        import init, { EscapeSteamMock } from './pkg/escape_the_backrooms_on_webgpu.js';
+        import init, { init_emulator_core } from './pkg/escape_the_backrooms_on_webgpu.js';
 
-        // ==========================================
-        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化
-        // ==========================================
+        // ---------------------------------------------------------------------
+        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化（プチフリ完全消滅）
+        // ---------------------------------------------------------------------
         const dbRequest = indexedDB.open("WebGPUShaderCache", 1);
         dbRequest.onupgradeneeded = () => dbRequest.result.createObjectStore("shaders");
 
         if (window.GPUDevice) {
             GPUDevice.prototype.createRenderPipelineAsync = async function(descriptor) {
                 const db = dbRequest.result;
-                // シェーダーの文字コードをキーにして一意に識別
                 const cacheKey = JSON.stringify(descriptor.vertex.module.code + (descriptor.fragment?.module.code || ""));
                 
-                // IndexedDBから過去のコンパイル済みバイナリを高速検索
                 const cachedBlob = await new Promise(r => {
                     const tx = db.transaction("shaders", "readonly");
                     tx.objectStore("shaders").get(cacheKey).onsuccess = e => r(e.target.result);
                 });
 
                 if (cachedBlob) {
-                    // 【ワープ】コンパイルを完全スキップし、ハードウェアキャッシュから即時展開
                     descriptor.pipelineCache = await this.createPipelineCache({ blob: cachedBlob });
                 }
                 
                 const pipeline = await GPUDevice.prototype.createRenderPipeline.call(this, descriptor);
                 
-                // 初回コンパイルだった場合、完成バイナリを抽出してIndexedDBに永続保存
                 if (!cachedBlob && pipeline.cache) {
                     const blob = await pipeline.cache.getBlob();
                     const tx = db.transaction("shaders", "readwrite");
@@ -51,56 +46,70 @@
             };
         }
 
-        // ==========================================
+        // ---------------------------------------------------------------------
         // ハック②：STUN/TURN完全排除 ✕ IPv6ダイレクトP2P
-        // ==========================================
+        // ---------------------------------------------------------------------
         let peerConnection = null;
         let dataChannel = null;
 
-        function initWebRTCP2P(targetIPv6 = null) {
-            // ICEサーバーを「完全に空っぽ」に固定。STUN/TURNへの無駄な通信を物理的に遮断
-            const config = { iceServers: [], iceTransportPolicy: 'all' };
-            peerConnection = new RTCPeerConnection(config);
+        window.initWebRTCP2P = function(targetIPv6 = null) {
+            // ICEサーバー空っぽ固定。STUN/TURNへの無駄パケットを物理シャットアウト
+            peerConnection = new RTCPeerConnection({ iceServers: [], iceTransportPolicy: 'all' });
 
             if (!targetIPv6) {
-                // ホスト（あなた）側：データチャンネルを開いて接続を待つ
-                dataChannel = peerConnection.createDataChannel("v6GameTunnel", { ordered: false }); // UDPモード
+                dataChannel = peerConnection.createDataChannel("v6GameTunnel", { ordered: false });
                 setupDataChannel(dataChannel);
             } else {
-                // クライアント（友達）側：ホストが生成したオファーをIPv6直撃で受ける設定
                 peerConnection.ondatachannel = (event) => {
                     dataChannel = event.channel;
                     setupDataChannel(dataChannel);
                 };
             }
-        }
+        };
 
         function setupDataChannel(channel) {
             channel.onmessage = (event) => {
-                // 友達から届いた生のゲームパケットを、Wasm内のゲーム（.exe）のメモリへ直接インジェクション！
-                // 本来Steamネットワークがやる仕事を、JavaScriptが1行で完全代行
-                window.inject_packet_to_game(new Uint8Array(event.data));
+                // 友達から届いた生パケットをWasmのエミュレータメモリへダイレクトインジェクション
+                window.inject_packet_to_emulator(new Uint8Array(event.data));
             };
         }
 
-        // Rust（Mock）側から呼ばれるグローバル通信関数の配線
-        window.js_webrtc_send_packet = (target_id, packetData) => {
+        window.js_webrtc_send_packet = (packetData) => {
             if (dataChannel && dataChannel.readyState === "open") {
-                // ゲームが放った生パケットを、そのままIPv6の土管へストレート射出（オーバーヘッド0%）
-                dataChannel.send(packetData);
+                dataChannel.send(packetData); // 生パケットをIPv6の土管へストレート射出
             }
         };
 
-        window.js_trigger_steam_callback = (callback_id, param) => {
-            console.log(`[Steam Callback] ID: ${callback_id}, Param: ${param}`);
-            // ここでWasm側のゲームエンジンへイベントを通知
-        };
+        // ---------------------------------------------------------------------
+        // ハック③：MediaSession APIによる無音維持（Android Dozeモード完全回避）
+        // ---------------------------------------------------------------------
+        function startSurvivalAudioLoop() {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            gainNode.gain.value = 0.001; // 人間には完全に聞こえないレベルの極小音
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            oscillator.start();
 
-        // アプリケーションの起動
+            if (navigator.mediaSession) {
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: "Escape the Backrooms P2P Tunnel",
+                    artist: "WebGPU OS Core"
+                });
+                // 再生状態をキープし、ブラウザのバックグラウンド通信切断を防止
+                navigator.mediaSession.setActionHandler('play', () => {});
+                navigator.mediaSession.setActionHandler('pause', () => {});
+            }
+        }
+
         async function run() {
-            await init(); // Wasmのロード
-            initWebRTCP2P(); // サーバー0円のIPv6 P2P網開通
-            console.log("Escape the Backrooms on WebGPU: 準備完了");
+            await init();
+            init_emulator_core(); // 動的コンテナのJITブート
+            document.body.addEventListener('click', () => {
+                startSurvivalAudioLoop(); // 画面タップで生存ループ開始
+            }, { once: true });
+            console.log("Escape the Backrooms on WebGPU: Ready");
         }
         run();
     </script>
