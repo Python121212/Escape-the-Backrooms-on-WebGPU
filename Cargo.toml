@@ -1,0 +1,37 @@
+[package]
+name = "escape-the-backrooms-on-webgpu"
+version = "1.0.0"
+edition = "2021"
+authors = ["Your Name"]
+description = "Static Recompiled x86_64 to Wasm64 High-Performance Game Container"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 1. WebAssembly ＆ JavaScript 相互バインドの生命線
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window", "Document", "GpuDevice", "GpuAdapter", 
+    "RtcPeerConnection", "RtcDataChannel", "Bluetooth", "BatteryManager"
+] }
+
+# 2. 静的再コンパイルコードのIR最適化フロントエンド
+fex-wasm-jit = { version = "0.1", features = ["ir-optimization", "wasm64"] }
+
+# 3. グラフィックス ＆ 爆速超解像レイヤー (DXVK・Dawnのインジェクションハック)
+wgpu-hal = { version = "0.19", features = ["vulkan", "gles"] }
+wgpu-fsr = { version = "0.1", features = ["fsr2", "cas"] }
+
+# 4. ネットワーク ＆ 50行Mock用 Steam公式プロトコル
+steam-proto = { version = "0.2", features = ["friends", "chat", "protobuf"] }
+
+# 5. メモリ競合を分子レベルで撲滅するスレッドローカル・アロケータ
+mimalloc = { version = "0.1", default-features = false, features = ["secure"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
