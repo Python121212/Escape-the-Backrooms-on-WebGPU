@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Escape the Backrooms on WebGPU</title>
+    <link rel="manifest" href="./manifest.json">
+    <meta name="theme-color" content="#00ffcc">
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; user-select: none; -webkit-user-select: none; }
         #canvas { width: 100%; height: 100%; display: block; }
@@ -25,13 +27,8 @@
         }
         .err-line { color: #ff3333; font-weight: bold; }
 
-        /* ---------------------------------------------------------------------
-           仮想ゲームパッド UIレイアウト
-        --------------------------------------------------------------------- */
-        #gamepad-container {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            pointer-events: none; z-index: 5000; display: none;
-        }
+        /* 仮想ゲームパッド UI */
+        #gamepad-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5000; display: none; }
         .v-btn {
             position: absolute; width: 50px; height: 50px; background: rgba(255,255,255,0.15);
             color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 25px;
@@ -41,32 +38,12 @@
         }
         .v-btn:active { background: rgba(0, 255, 204, 0.4); border-color: #00ffcc; color: #00ffcc; }
         
-        /* 左側：移動十字方向（W/A/S/D） */
-        #v-w { left: 70px; bottom: 130px; }
-        #v-a { left: 15px; bottom: 75px; }
-        #v-s { left: 70px; bottom: 20px; }
-        #v-d { left: 125px; bottom: 75px; }
-
-        /* 右側：メインアクション（クリック、交流、走る、しゃがむ） */
-        #v-click { right: 20px; bottom: 80px; width: 70px; height: 70px; border-radius: 35px; font-size: 14px; background: rgba(0,255,204,0.15); } /* アイテム使用 */
-        #v-f { right: 105px; bottom: 90px; }    /* 交流 */
-        #v-shift { right: 20px; bottom: 165px; background: rgba(255,50,50,0.15); } /* 走る */
-        #v-ctrl { right: 85px; bottom: 25px; }   /* しゃがむ */
-
-        /* 中央下・上部：ユーティリティ（インベントリ、スロット、チャットなど） */
-        #v-q { left: 20px; top: 20px; }         /* 左リーン */
-        #v-e { left: 80px; top: 20px; }         /* 右リーン */
-        #v-v { left: 140px; top: 20px; }        /* ボイス話す */
-        #v-tab { left: 20px; top: 80px; }       /* プレイヤーリスト */
-        
-        #v-i { right: 20px; top: 20px; }        /* インベントリ */
-        #v-c { right: 80px; top: 20px; }        /* カードを見せる */
-        #v-enter { right: 140px; top: 20px; }    /* チャット送信 */
-
-        /* アイテムスロット（画面下部中央） */
-        #v-1 { left: calc(50% - 85px); bottom: 20px; }
-        #v-2 { left: calc(50% - 25px); bottom: 20px; }
-        #v-3 { left: calc(50% - -35px); bottom: 20px; }
+        #v-w { left: 70px; bottom: 130px; } #v-a { left: 15px; bottom: 75px; } #v-s { left: 70px; bottom: 20px; } #v-d { left: 125px; bottom: 75px; }
+        #v-click { right: 20px; bottom: 80px; width: 70px; height: 70px; border-radius: 35px; font-size: 14px; background: rgba(0,255,204,0.15); }
+        #v-f { right: 105px; bottom: 90px; } #v-shift { right: 20px; bottom: 165px; background: rgba(255,50,50,0.15); } #v-ctrl { right: 85px; bottom: 25px; }
+        #v-q { left: 20px; top: 20px; } #v-e { left: 80px; top: 20px; } #v-v { left: 140px; top: 20px; } #v-tab { left: 20px; top: 80px; }
+        #v-i { right: 20px; top: 20px; } #v-c { right: 80px; top: 20px; } #v-enter { right: 140px; top: 20px; }
+        #v-1 { left: calc(50% - 85px); bottom: 20px; } #v-2 { left: calc(50% - 25px); bottom: 20px; } #v-3 { left: calc(50% - -35px); bottom: 20px; }
     </style>
 </head>
 <body>
@@ -80,24 +57,11 @@
     <div id="debug-hud"></div>
 
     <div id="gamepad-container">
-        <div class="v-btn" id="v-w" data-key="KeyW">W</div>
-        <div class="v-btn" id="v-a" data-key="KeyA">A</div>
-        <div class="v-btn" id="v-s" data-key="KeyS">S</div>
-        <div class="v-btn" id="v-d" data-key="KeyD">D</div>
-        <div class="v-btn" id="v-q" data-key="KeyQ">Q</div>
-        <div class="v-btn" id="v-e" data-key="KeyE">E</div>
-        <div class="v-btn" id="v-v" data-key="KeyV">V</div>
-        <div class="v-btn" id="v-tab" data-key="Tab">TAB</div>
-        <div class="v-btn" id="v-click" data-key="LClick">USE</div>
-        <div class="v-btn" id="v-f" data-key="KeyF">F</div>
-        <div class="v-btn" id="v-shift" data-key="ShiftLeft">RUN</div>
-        <div class="v-btn" id="v-ctrl" data-key="ControlLeft">CTRL</div>
-        <div class="v-btn" id="v-i" data-key="KeyI">INV</div>
-        <div class="v-btn" id="v-c" data-key="KeyC">CARD</div>
-        <div class="v-btn" id="v-enter" data-key="Enter">TXT</div>
-        <div class="v-btn" id="v-1" data-key="Digit1">1</div>
-        <div class="v-btn" id="v-2" data-key="Digit2">2</div>
-        <div class="v-btn" id="v-3" data-key="Digit3">3</div>
+        <div class="v-btn" id="v-w" data-key="KeyW">W</div><div class="v-btn" id="v-a" data-key="KeyA">A</div><div class="v-btn" id="v-s" data-key="KeyS">S</div><div class="v-btn" id="v-d" data-key="KeyD">D</div>
+        <div class="v-btn" id="v-q" data-key="KeyQ">Q</div><div class="v-btn" id="v-e" data-key="KeyE">E</div><div class="v-btn" id="v-v" data-key="KeyV">V</div><div class="v-btn" id="v-tab" data-key="Tab">TAB</div>
+        <div class="v-btn" id="v-click" data-key="LClick">USE</div><div class="v-btn" id="v-f" data-key="KeyF">F</div><div class="v-btn" id="v-shift" data-key="ShiftLeft">RUN</div><div class="v-btn" id="v-ctrl" data-key="ControlLeft">CTRL</div>
+        <div class="v-btn" id="v-i" data-key="KeyI">INV</div><div class="v-btn" id="v-c" data-key="KeyC">CARD</div><div class="v-btn" id="v-enter" data-key="Enter">TXT</div>
+        <div class="v-btn" id="v-1" data-key="Digit1">1</div><div class="v-btn" id="v-2" data-key="Digit2">2</div><div class="v-btn" id="v-3" data-key="Digit3">3</div>
     </div>
 
     <script type="module">
@@ -109,50 +73,31 @@
             const div = document.createElement('div');
             div.className = type === 'error' ? 'err-line' : '';
             div.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
-            hud.appendChild(div);
-            hud.scrollTop = hud.scrollHeight; 
+            hud.appendChild(div); hud.scrollTop = hud.scrollHeight; 
         }
 
         window.onerror = function(message, source, lineno, colno, error) {
-            logToHUD(`CRITICAL: ${message} (${source}:${lineno})`, 'error');
-            return false;
+            logToHUD(`CRITICAL: ${message} (${source}:${lineno})`, 'error'); return false;
         };
+        window.js_report_emulator_error = (err_code, detail) => { logToHUD(navigator.user_agent ? `ERR: ${detail}` : `ERROR [${err_code}]: ${detail}`, 'error'); };
 
-        window.js_report_emulator_error = (err_code, detail) => {
-            logToHUD(`ERROR [${err_code}]: ${detail}`, 'error');
-        };
-
-        // ---------------------------------------------------------------------
-        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化 ＆ 5行サンプラー
-        // ---------------------------------------------------------------------
+        // ハック①：GPUPipelineCache ✕ IndexedDB ✕ 5行サンプラー
         const dbRequest = indexedDB.open("WebGPUShaderCache", 1);
         dbRequest.onupgradeneeded = () => dbRequest.result.createObjectStore("shaders");
-
         if (window.GPUDevice) {
             const orgCreateSampler = GPUDevice.prototype.createSampler;
-            GPUDevice.prototype.createSampler = function(descriptor) {
-                return orgCreateSampler.call(this, { ...descriptor, maxAnisotropy: 16, magFilter: 'linear', minFilter: 'linear' });
-            };
-
+            GPUDevice.prototype.createSampler = function(descriptor) { return orgCreateSampler.call(this, { ...descriptor, maxAnisotropy: 16, magFilter: 'linear', minFilter: 'linear' }); };
             GPUDevice.prototype.createRenderPipelineAsync = async function(descriptor) {
-                const db = dbRequest.result;
-                const cacheKey = JSON.stringify(descriptor.vertex.module.code + (descriptor.fragment?.module.code || ""));
-                const cachedBlob = await new Promise(r => {
-                    db.transaction("shaders", "readonly").objectStore("shaders").get(cacheKey).onsuccess = e => r(e.target.result);
-                });
+                const db = dbRequest.result; const cacheKey = JSON.stringify(descriptor.vertex.module.code + (descriptor.fragment?.module.code || ""));
+                const cachedBlob = await new Promise(r => { db.transaction("shaders", "readonly").objectStore("shaders").get(cacheKey).onsuccess = e => r(e.target.result); });
                 if (cachedBlob) descriptor.pipelineCache = await this.createPipelineCache({ blob: cachedBlob });
                 const pipeline = await GPUDevice.prototype.createRenderPipeline.call(this, descriptor);
-                if (!cachedBlob && pipeline.cache) {
-                    const blob = await pipeline.cache.getBlob();
-                    db.transaction("shaders", "readwrite").objectStore("shaders").put(blob, cacheKey);
-                }
+                if (!cachedBlob && pipeline.cache) { const blob = await pipeline.cache.getBlob(); db.transaction("shaders", "readwrite").objectStore("shaders").put(blob, cacheKey); }
                 return pipeline;
             };
         }
 
-        // ---------------------------------------------------------------------
-        // ハック②：STUN/TURN完全排除 ✕ IPv6P2P ＆ ハック③：MediaSession無音
-        // ---------------------------------------------------------------------
+        // ハック②・③（WebRTC P2P ＆ 無音維持）
         let peerConnection = null; let dataChannel = null;
         window.initWebRTCP2P = function(targetIPv6 = null) {
             peerConnection = new RTCPeerConnection({ iceServers: [], iceTransportPolicy: 'all' });
@@ -161,58 +106,44 @@
         };
         function setupDataChannel(channel) { channel.onmessage = (event) => { window.inject_packet_to_emulator(new Uint8Array(event.data)); }; }
         window.js_webrtc_send_packet = (packetData) => { if (dataChannel && dataChannel.readyState === "open") dataChannel.send(packetData); };
-
         function startSurvivalAudioLoop() {
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain();
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)(); const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain();
             gainNode.gain.value = 0.001; oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start();
         }
 
-        // ---------------------------------------------------------------------
-        // 仮想ゲームパッド超低遅延ブリッジシステム
-        // ---------------------------------------------------------------------
+        // ゲームパッドブリッジ
         function setupVirtualGamepad() {
-            const buttons = document.querySelectorAll('.v-btn');
-            
-            buttons.forEach(btn => {
+            document.querySelectorAll('.v-btn').forEach(btn => {
                 const keyCode = btn.getAttribute('data-key');
-                
-                // タッチ開始時：Wasm側のBox64（Win32）へ「キー押下(True)」を通知
-                btn.addEventListener('touchstart', (e) => {
-                    e.preventDefault();
-                    inject_keyboard_input(keyCode, true);
-                }, { passive: false });
-                
-                // タッチ終了時：Wasm側のBox64（Win32）へ「キー解除(False)」を通知
-                btn.addEventListener('touchend', (e) => {
-                    e.preventDefault();
-                    inject_keyboard_input(keyCode, false);
-                }, { passive: false });
+                btn.addEventListener('touchstart', (e) => { e.preventDefault(); inject_keyboard_input(keyCode, true); }, { passive: false });
+                btn.addEventListener('touchend', (e) => { e.preventDefault(); inject_keyboard_input(keyCode, false); }, { passive: false });
             });
-            
-            // 起動成功後にゲームパッドを表示
             document.getElementById('gamepad-container').style.display = 'block';
         }
 
-        // ---------------------------------------------------------------------
-        // Steam ＆ メイン実行
-        // ---------------------------------------------------------------------
+        // メインシステム起動
         let opfsRoot = null;
         async function run() {
             await init(); init_emulator_core(); 
             opfsRoot = await navigator.storage.getDirectory(); init_opfs_filesystem();
             
+            // ---------------------------------------------------------------------
+            // PWA サービスワーカー自動バックグラウンド登録
+            // ---------------------------------------------------------------------
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(() => logToHUD("PWAオフラインキャッシュ（0秒起動層）の同期に成功"))
+                    .catch(err => console.log("SW登録省略:", err));
+            }
+
             document.getElementById('boot-button').addEventListener('click', async () => {
                 startSurvivalAudioLoop();
-                // エミュレータへのダミーEXEマウント
                 const file = await opfsRoot.getFileHandle("EscapeTheBackrooms.exe", { create: true });
                 const writable = await file.createWritable(); await writable.write(new Uint8Array([0x4D, 0x5A])); await writable.close();
-                
                 boot_game_exe("EscapeTheBackrooms.exe");
-                setupVirtualGamepad(); // ゲームパッド有効化
-                
+                setupVirtualGamepad();
                 document.getElementById('boot-overlay').style.display = 'none';
-                setInterval(apply_fsr_upscale, 16); // 60FPS描画駆動
+                setInterval(apply_fsr_upscale, 16);
             });
         }
         run();
