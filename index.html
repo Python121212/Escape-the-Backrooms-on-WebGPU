@@ -190,7 +190,7 @@
 
                 logToHUD("DX11 ➔ WebGPU グラフィックブリッジを初期化中...");
                 
-                gatewaySocket = new WebSocket("wss://YOUR-WORKERS-URL.workers.dev");
+                gatewaySocket = new WebSocket("wss://billowing-king-ee1f.web-on-steam.workers.dev");
                 gatewaySocket.onopen = () => logToHUD("Steamネットワークと同期完了。");
 
                 document.getElementById('boot-overlay').style.display = 'none';
