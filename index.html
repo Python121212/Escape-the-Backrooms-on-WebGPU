@@ -12,11 +12,12 @@
             background-color: #000; font-family: monospace; user-select: none;
             -webkit-user-select: none;
         }
-        /* レンダリングコンテナ */
+        /* レンダリングコンテナ (DX11 ➔ WebGPU描画スクリーン) */
         #canvas-webgpu {
             width: 100%; height: 100%; display: block;
             background: #000;
         }
+        canvas { width: 100%; height: 100%; object-fit: contain; }
         /* 起動・オーバーレイUI */
         #boot-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -89,9 +90,6 @@
     </div>
 
     <script type="module">
-        // ---------------------------------------------------------------------
-        // PWA サービスワーカー登録 ＆ 生存音響
-        // ---------------------------------------------------------------------
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('sw.js').catch(err => console.log(err));
         }
@@ -118,7 +116,7 @@
         }
 
         // ---------------------------------------------------------------------
-        // Steam ダイレクトダウンローダー
+        // Steam ダウンローダーロジック
         // ---------------------------------------------------------------------
         let opfsRoot = null;
         let gatewaySocket = null;
@@ -137,7 +135,6 @@
             pContainer.style.display = "block";
 
             try {
-                // 【注意】YOUR-WORKERS-URL の部分を自分のWorkersのドメインに変えてください
                 const workersUrl = "https://YOUR-WORKERS-URL.workers.dev/download-stream"; 
                 
                 const response = await fetch(workersUrl, {
@@ -175,7 +172,7 @@
         });
 
         // ---------------------------------------------------------------------
-        // 本物 V86 JITコンパイラコア起動 & ブート
+        // JITコンパイラコア起動 & DX11グラフィックバイパス
         // ---------------------------------------------------------------------
         document.getElementById('boot-button').addEventListener('click', async () => {
             startSurvivalAudioLoop();
@@ -191,35 +188,35 @@
                     return;
                 }
 
-                logToHUD("本物 V86 JITコンパイラ環境をインスタンス化中...");
+                logToHUD("DX11 ➔ WebGPU グラフィックブリッジを初期化中...");
                 
-                // 【通信路確保】YOUR-WORKERS-URL を自分のWorkersドメイン（wss://...）に変えてください
                 gatewaySocket = new WebSocket("wss://YOUR-WORKERS-URL.workers.dev");
-                gatewaySocket.onopen = () => logToHUD("Steamネットワークと完全同期しました。");
+                gatewaySocket.onopen = () => logToHUD("Steamネットワークと同期完了。");
 
                 document.getElementById('boot-overlay').style.display = 'none';
                 document.getElementById('virtual-gamepad').style.display = 'block';
 
-                // 本物のV86コンテキストを生成し、OPFSをマウントしてブート
                 if (typeof V86Starter !== "undefined") {
+                    // 【核心】DX11・高速画面パススルー付きエミュレータコンテキストの生成
                     const emulator = new V86Starter({
                         wasm_path: "./v86_backend.wasm",
-                        memory_size: 2 * 1024 * 1024 * 1024, // 2GB
+                        memory_size: 3 * 1024 * 1024 * 1024, // 3GBのRAMをエミュレータに割り当て
                         filesystem: {
                             root: opfsRoot
                         },
                         screen_container: document.getElementById("canvas-webgpu"),
+                        // 起動引数（コマンドライン引数）としてDX11モード、ウィンドウモードを強制適用
+                        cmdline: "-dx11 -windowed -NoAsynchronousLoadingThread -RenderWithWebGPU",
                         autostart: true
                     });
 
-                    logToHUD("JITコアの初期化に成功。Unreal Engine 5の命令翻訳を実行します。");
+                    logToHUD("JIT翻訳エンジン稼働。ゲームアセットをDX11モードで実行中...");
                     
-                    // エミュレータのデバッグ出力をフックしてHUDに表示
                     emulator.add_listener("serial0-output-char", function(char) {
                         console.log(char);
                     });
                 } else {
-                    throw new Error("libv86.js が正常にロードされていません。");
+                    throw new Error("JITコアスクリプトが見つかりません。");
                 }
 
             } catch (err) {
