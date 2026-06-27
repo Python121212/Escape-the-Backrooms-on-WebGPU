@@ -90,7 +90,7 @@
 
         function connectToCrossplayGateway() {
             // 本番運用時はここにgateway.jsを走らせているサーバーのIP/ドメインを指定します
-            gatewaySocket = new WebSocket("ws://localhost:8080"); 
+            gatewaySocket = new WebSocket("wss://billowing-king-ee1f.web-on-steam.workers.dev"); 
             gatewaySocket.binaryType = "arraybuffer";
 
             gatewaySocket.onopen = () => {
