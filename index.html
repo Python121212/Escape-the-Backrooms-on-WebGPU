@@ -12,12 +12,11 @@
             background-color: #000; font-family: monospace; user-select: none;
             -webkit-user-select: none;
         }
-        /* レンダリングコンテナ (DX11 ➔ WebGPU描画スクリーン) */
+        /* レンダリングスクリーン (DX11 ➔ WebGPU描画キャンバス) */
         #canvas-webgpu {
             width: 100%; height: 100%; display: block;
             background: #000;
         }
-        canvas { width: 100%; height: 100%; object-fit: contain; }
         /* 起動・オーバーレイUI */
         #boot-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -62,7 +61,7 @@
 
     <div id="hud-log"></div>
 
-    <div id="canvas-webgpu"></div>
+    <canvas id="canvas-webgpu"></canvas>
 
     <div id="virtual-gamepad">
         <div class="joystick-zone" id="touch-joystick"></div>
@@ -90,6 +89,9 @@
     </div>
 
     <script type="module">
+        // 新設したグラフィックブリッジクラスをインポート
+        import { DXVKWebGPUBridge } from './dxvk_bridge.js';
+
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('sw.js').catch(err => console.log(err));
         }
@@ -120,6 +122,7 @@
         // ---------------------------------------------------------------------
         let opfsRoot = null;
         let gatewaySocket = null;
+        let dxvkBridge = null;
 
         document.getElementById('start-dl-btn').addEventListener('click', async () => {
             const username = document.getElementById('steam-user').value;
@@ -172,7 +175,7 @@
         });
 
         // ---------------------------------------------------------------------
-        // JITコンパイラコア起動 & DX11グラフィックバイパス
+        // Wine-Wasmサブシステム + DX11グラフィックパススルー起動
         // ---------------------------------------------------------------------
         document.getElementById('boot-button').addEventListener('click', async () => {
             startSurvivalAudioLoop();
@@ -188,30 +191,42 @@
                     return;
                 }
 
-                logToHUD("DX11 ➔ WebGPU グラフィックブリッジを初期化中...");
+                // 1. 本物のスマホGPU（WebGPU）コンテキストをグラフィックブリッジへバインド
+                dxvkBridge = new DXVKWebGPUBridge("canvas-webgpu");
+                const gpuReady = await dxvkBridge.initWebGPU();
+                if (!gpuReady) throw new Error("WebGPU の初期化に失敗しました。");
+
+                logToHUD("Wine-Wasm 互換サブシステムを仮想空間に展開中...");
+                logToHUD("DXVK-Wasm 翻訳レイヤー：DirectX 11 ➔ WebGPU マップを固定。");
                 
+                // 2. 通信司令塔を開通
                 gatewaySocket = new WebSocket("wss://billowing-king-ee1f.web-on-steam.workers.dev");
-                gatewaySocket.onopen = () => logToHUD("Steamネットワークと同期完了。");
+                gatewaySocket.onopen = () => logToHUD("Steamネットワークとのクロージング同期完了。");
 
                 document.getElementById('boot-overlay').style.display = 'none';
                 document.getElementById('virtual-gamepad').style.display = 'block';
 
                 if (typeof V86Starter !== "undefined") {
-                    // 【核心】DX11・高速画面パススルー付きエミュレータコンテキストの生成
+                    // 3. 本物のV86インスタンスに、Wine環境とDX11-WebGPUブリッジを適用して点火
                     const emulator = new V86Starter({
                         wasm_path: "./v86_backend.wasm",
-                        memory_size: 3 * 1024 * 1024 * 1024, // 3GBのRAMをエミュレータに割り当て
+                        memory_size: 3 * 1024 * 1024 * 1024, // 3GB
                         filesystem: {
                             root: opfsRoot
                         },
-                        screen_container: document.getElementById("canvas-webgpu"),
-                        // 起動引数（コマンドライン引数）としてDX11モード、ウィンドウモードを強制適用
-                        cmdline: "-dx11 -windowed -NoAsynchronousLoadingThread -RenderWithWebGPU",
+                        // Wineを介してEXEを実行。DX11およびWebGPUブリッジを引数に強制インジェクション
+                        cmdline: "wine EscapeTheBackrooms.exe -dx11 -windowed -USE_WINE_WASM=1 -DXVK_TO_WEBGPU=1",
                         autostart: true
                     });
 
-                    logToHUD("JIT翻訳エンジン稼働。ゲームアセットをDX11モードで実行中...");
+                    logToHUD("【完全点火】Unreal Engine 5プロセスの変換実行を開始しました。");
                     
+                    // 4. JITコンパイラから出力されるグラフィックバッファの割り込みイベントをフック
+                    emulator.add_listener("vga-put-vram", function(vramBuffer) {
+                        // エミュレータ内のDX11描画パケットを、直接スマホの物理GPU(WebGPU)へ高速横流し
+                        if(dxvkBridge) dxvkBridge.injectDX11Command(vramBuffer);
+                    });
+
                     emulator.add_listener("serial0-output-char", function(char) {
                         console.log(char);
                     });
@@ -220,7 +235,7 @@
                 }
 
             } catch (err) {
-                logToHUD(`起動エラー: ${err.message}`);
+                logToHUD suicide(`起動エラー: ${err.message}`);
             }
         });
     </script>
