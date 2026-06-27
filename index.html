@@ -8,7 +8,6 @@
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
         #canvas { width: 100%; height: 100%; display: block; }
         
-        /* エラー可視化HUDの専用スタイル */
         #debug-hud {
             position: absolute; top: 10px; left: 10px; width: calc(100% - 20px); max-height: 200px;
             background: rgba(0, 0, 0, 0.85); color: #00ffcc; font-family: monospace; font-size: 11px;
@@ -24,11 +23,8 @@
     <div id="debug-hud"></div>
 
     <script type="module">
-        import init, { init_emulator_core } from './pkg/escape_the_backrooms_on_webgpu.js';
+        import init, { init_emulator_core, init_opfs_filesystem } from './pkg/escape_the_backrooms_on_webgpu.js';
 
-        // ---------------------------------------------------------------------
-        // エラーデバッグHUDの制御ロジック
-        // ---------------------------------------------------------------------
         const hud = document.getElementById('debug-hud');
         function logToHUD(msg, type = 'info') {
             hud.style.display = 'block'; 
@@ -39,26 +35,25 @@
             hud.scrollTop = hud.scrollHeight; 
         }
 
-        // ブラウザ全体の未キャッチエラー・Wasmクラッシュを完全捕捉
         window.onerror = function(message, source, lineno, colno, error) {
             logToHUD(`CRITICAL: ${message} (${source}:${lineno})`, 'error');
             return false;
         };
 
-        // Rust側（エミュレータ核心部）からエラーコードを受け取る配線
         window.js_report_emulator_error = (err_code, detail) => {
             const errorMatrix = {
                 101: "【x86_64 翻訳エラー】未実装のx86命令を検知しました",
                 102: "【メモリモデル衝突】TSO同期中にデッドロックの兆候を検知",
                 201: "【Vulkan ➔ WGSL変換失敗】SPIRV-Crossが非対応のシェーダーを検出",
-                301: "【IPv6直撃失敗】相手へのダイレクトルートが遮断されました（NAT壁）"
+                301: "【IPv6直撃失敗】相手へのダイレクトルートが遮断されました（NAT壁）",
+                401: "【OPFSストレージエラー】ファイルの高速I/Oに失敗しました"
             };
             const title = errorMatrix[err_code] || "【未知のエラー】";
             logToHUD(`${title} -> 詳細: ${detail}`, 'error');
         };
 
         // ---------------------------------------------------------------------
-        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化（プチフリ消滅）
+        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化
         // ---------------------------------------------------------------------
         const dbRequest = indexedDB.open("WebGPUShaderCache", 1);
         dbRequest.onupgradeneeded = () => dbRequest.result.createObjectStore("shaders");
@@ -77,7 +72,6 @@
                     descriptor.pipelineCache = await this.createPipelineCache({ blob: cachedBlob });
                 }
                 
-                // WebGPUデバイスのエラーキャッチスコープを設置
                 this.pushErrorScope('validation');
                 const pipeline = await GPUDevice.prototype.createRenderPipeline.call(this, descriptor);
                 this.popErrorScope().then((error) => {
@@ -129,7 +123,7 @@
         };
 
         // ---------------------------------------------------------------------
-        // ハック③：MediaSession APIによる無音維持（Dozeモード回避）
+        // ハック③：MediaSession APIによる無音維持
         // ---------------------------------------------------------------------
         function startSurvivalAudioLoop() {
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -150,9 +144,25 @@
             }
         }
 
+        // ---------------------------------------------------------------------
+        // OPFS (Origin Private File System) 初期化支援ブリッジ
+        // ---------------------------------------------------------------------
+        async function setupOPFS() {
+            try {
+                // ブラウザの高速ファイルシステムのルートハンドルを取得
+                const root = await navigator.storage.getDirectory();
+                // Wasm側にOPFSが利用可能であることを通知
+                init_opfs_filesystem();
+                logToHUD("OPFS高速ストレージ基盤の接続に成功しました");
+            } catch (err) {
+                window.js_report_emulator_error(401, `OPFSアクセス拒否: ${err.message}`);
+            }
+        }
+
         async function run() {
             await init();
             init_emulator_core(); 
+            await setupOPFS(); // OPFS起動
             document.body.addEventListener('click', () => {
                 startSurvivalAudioLoop(); 
                 logToHUD("システム生存オーディオループを有効化しました");
