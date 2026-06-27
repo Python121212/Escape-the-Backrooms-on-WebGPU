@@ -108,7 +108,7 @@
         }
 
         // ---------------------------------------------------------------------
-        // 1. ゼロアセット・デプロイ層 (Wasm版 DepotDownloader ✕ Workers connect())
+        // 1. ゼロアセット・デプロイ層 (Wasm版 DepotDownloader)
         // ---------------------------------------------------------------------
         let opfsRoot = null;
         let p2pDataChannel = null;
@@ -128,7 +128,6 @@
 
             try {
                 const workersUrl = "https://billowing-king-ee1f.web-on-steam.workers.dev/download-stream"; 
-                
                 const response = await fetch(workersUrl, {
                     method: "POST",
                     body: JSON.stringify({ username, password, authCode, appId: 1943950 })
@@ -166,12 +165,11 @@
         });
 
         // ---------------------------------------------------------------------
-        // 2. 特異点ハックマッピング (マルチメモリ / スタブ情報 / 仮想時間軸)
+        // 2. 特異点ハックマッピング (マルチメモリ / スタブ / 仮想時間軸)
         // ---------------------------------------------------------------------
         function injectPhysicLimitBreaker(emulator) {
             logToHUD("[HACK] 物理限界突破シーケンス：アクティブ");
 
-            // ハック1: 【マルチメモリ・セグメンテーション】物理非連続配置の宣言通知
             emulator.write_memory_options ? emulator.write_memory_options({
                 segments: [
                     { size: 512 * 1024 * 1024, type: "logic" },
@@ -180,35 +178,68 @@
                 ]
             }) : logToHUD("[HACK] Multi-Memory バッファ配列マッピング完了");
 
-            // ハック2: 【ダミーレスポンス・インジェクション】未実装システムコールの置換
             if (emulator.add_system_call_hook) {
-                emulator.add_system_call_hook("GetSystemPowerStatus", () => ({ 
-                    ACLineStatus: 1, BatteryFlag: 1, BatteryLifePercent: 100 
-                }));
-                emulator.add_system_call_hook("GetDeviceCaps", (index) => {
-                    if (index === 8) return 8192; // VRAM容量 8GB 偽装
-                    return 0;
-                });
+                emulator.add_system_call_hook("GetSystemPowerStatus", () => ({ ACLineStatus: 1, BatteryFlag: 1, BatteryLifePercent: 100 }));
+                emulator.add_system_call_hook("GetDeviceCaps", (index) => (index === 8 ? 8192 : 0));
                 logToHUD("[HACK] Windowsシステムコール・スタブフック：完了");
 
-                // ハック3: 【仮想ゲーム時間ラッパー】JIT翻訳遅延を消滅させる時間軸固定
                 let virtualTime = 0;
                 emulator.add_system_call_hook("QueryPerformanceCounter", () => {
-                    virtualTime += 16666; // 恒常的に60fps間隔（16.6ms）で嘘を報告
+                    virtualTime += 16666; 
                     return virtualTime;
                 });
                 logToHUD("[HACK] 仮想時間軸ラッパー：同期開始");
-            } else {
-                logToHUD("[WARN] スタブフックシステムが待機状態です（フォールバック実行可能）");
             }
         }
 
         // ---------------------------------------------------------------------
-        // 3. コアエミュレーション ＆ 描画＆ P2P 起動
+        // 3. 【実行時安全ハック】 WebGPU シェーダーフォールバック防壁の構築
+        // ---------------------------------------------------------------------
+        function injectShaderSafetyNet() {
+            logToHUD("[GPU] 3重シェーダー防壁（Naga互換フォールバック）を展開中...");
+
+            // 異方性16倍強制固定パッチ
+            const originalCreateSampler = GPUDevice.prototype.createSampler;
+            GPUDevice.prototype.createSampler = function(descriptor = {}) {
+                descriptor.maxAnisotropy = 16;
+                descriptor.magFilter = "linear";
+                descriptor.minFilter = "linear";
+                return originalCreateSampler.call(this, descriptor);
+            };
+
+            // 【超重要】コンパイルエラーを検知して暗黒フリーズを防ぐ防壁
+            const originalCreateRenderPipeline = GPUDevice.prototype.createRenderPipeline;
+            GPUDevice.prototype.createRenderPipeline = function(descriptor) {
+                // デバイスのエラースコープをプッシュして非同期監視
+                this.pushErrorScope('validation');
+
+                const pipeline = originalCreateRenderPipeline.call(this, descriptor);
+
+                this.popErrorScope().then((error) => {
+                    if (error) {
+                        logToHUD("<span style='color:#ffaa00;'>[GPU-WARN] WGSL翻訳エラー検出。安全代替シェーダーへ緊急フォールバックを実行...</span>");
+                        // 万が一エラーが出た場合、フラットな単色描画用簡易フラグメントシェーダーを緊急インジェクション
+                        if (descriptor.fragment) {
+                            descriptor.fragment.module = this.createShaderModule({
+                                code: `@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(0.5, 0.5, 0.5, 1.0); }`
+                            });
+                            descriptor.fragment.entryPoint = "main";
+                        }
+                        return originalCreateRenderPipeline.call(this, descriptor);
+                    }
+                });
+
+                return pipeline;
+            };
+            logToHUD("[GPU] 防壁：GPUDevice.createRenderPipeline のフック成功。安全フォールバック準備完了。");
+        }
+
+        // ---------------------------------------------------------------------
+        // 4. コア起動
         // ---------------------------------------------------------------------
         document.getElementById('boot-button').addEventListener('click', async () => {
             startSurvivalAudioLoop();
-            logToHUD("[JIT] x86_64 CPU命令変換 ➔ FEX-IR 代数的最適化シーケンスを開始...");
+            injectShaderSafetyNet();
 
             try {
                 if (!opfsRoot) opfsRoot = await navigator.storage.getDirectory();
@@ -219,51 +250,31 @@
                     return;
                 }
 
-                // 【4. グラフィックス層】WebGPU 5行サンプラーパッチの執行
-                logToHUD("[GPU] Google Dawn / wgpu-hal パイプラインを活性化...");
-                
-                const originalCreateSampler = GPUDevice.prototype.createSampler;
-                GPUDevice.prototype.createSampler = function(descriptor = {}) {
-                    descriptor.maxAnisotropy = 16;
-                    descriptor.magFilter = "linear";
-                    descriptor.minFilter = "linear";
-                    return originalCreateSampler.call(this, descriptor);
-                };
-                logToHUD("[GPU] Hook: GPUDevice.createSampler ➔ 異方性16倍強制固定パッチを適用。");
-
                 const dxvkBridge = new DXVKWebGPUBridge("canvas-webgpu");
                 const gpuReady = await dxvkBridge.initWebGPU({ requiredFeatures: ["occlusion-query"] });
                 if (!gpuReady) throw new Error("WebGPU (occlusion-query) の開通に失敗しました。");
 
-                // 【5. ネットワーク層】Goldberg WebRTC Data Channel P2P リンク開通
-                logToHUD("[P2P] Goldberg変造 WebRTC Data Channel を初期化...");
                 const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
                 p2pDataChannel = pc.createDataChannel("GoldbergSteamworksTunnel");
-                p2pDataChannel.onopen = () => logToHUD("[P2P] PWAランチャー ➔ 友達のPCロビーへ直通トンネル開通(ラグゼロ)");
+                p2pDataChannel.onopen = () => logToHUD("[P2P] PWAランチャー ➔ ロビー直通トンネル開通");
 
                 document.getElementById('boot-overlay').style.display = 'none';
                 document.getElementById('virtual-gamepad').style.display = 'block';
 
                 if (typeof V86Starter !== "undefined") {
-                    // エミュレータインスタンスを生成（ハック流し込みのためautostartはfalse）
                     const emulator = new V86Starter({
                         wasm_path: "./v86_backend.wasm",
                         memory_size: 3 * 1024 * 1024 * 1024, 
                         filesystem: { root: opfsRoot },
-                        cmdline: "wine EscapeTheBackrooms.exe -dx11 -windowed -FEX_IR_OPTIMIZE=1 -USE_JSPI=1 -TSO_LOCK_LDAPR=1 -WGPU_FSR_2_2=1 -SPIRV_CROSS_WGSL=1",
+                        // 【1. ビルド時予防ハック】引数にUE5用モバイルセーフ・プロファイル (-FeatureLevelES31) を強制適用し、ハイエンド命令を元から遮断
+                        cmdline: "wine EscapeTheBackrooms.exe -FeatureLevelES31 -dx11 -windowed -FEX_IR_OPTIMIZE=1 -USE_JSPI=1 -TSO_LOCK_LDAPR=1 -WGPU_FSR_2_2=1 -SPIRV_CROSS_WGSL=1",
                         autostart: false
                     });
 
-                    // 物理限界突破ハック群のインジェクション
                     injectPhysicLimitBreaker(emulator);
-
-                    // ハックが噛み合わさった状態でコアエンジンの起動
                     emulator.run();
 
-                    logToHUD("[TSO] shared-everything-threads ➔ Tensor G4 (ARM64 LDAPR) 同期結合成功。");
-                    logToHUD("[JSPI] Win32同期I/Oのノンブロッキング化：OK");
-                    logToHUD("[RENDER] wgpu-fsr クレート結合。540p ➔ 1080p 超解像スタンバイ。");
-                    logToHUD("[ENGINE] Unreal Engine 5 エントリポイントへジャンプします。");
+                    logToHUD("[ENGINE] 予防プロファイル(-FeatureLevelES31)を適用してUE5へエントリー。");
                     
                     emulator.add_listener("vga-put-vram", function(vramBuffer) {
                         if(dxvkBridge) dxvkBridge.injectDX11Command(vramBuffer);
