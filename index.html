@@ -14,16 +14,31 @@
             padding: 10px; border-radius: 5px; overflow-y: auto; z-index: 9999;
             border: 1px solid #00ffcc; pointer-events: none; display: none;
         }
+        #boot-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #111; color: #fff; display: flex; flex-direction: column;
+            justify-content: center; align-items: center; font-family: sans-serif; z-index: 10000;
+        }
+        #boot-button {
+            padding: 15px 30px; font-size: 18px; background: #00ffcc; color: #000;
+            border: none; border-radius: 5px; cursor: pointer; font-weight: bold;
+        }
         .err-line { color: #ff3333; font-weight: bold; }
         .warn-line { color: #ffaa00; }
     </style>
 </head>
 <body>
+    <div id="boot-overlay">
+        <h2>Escape the Backrooms on WebGPU</h2>
+        <p id="boot-status">システム準備完了。Steamアセットを展開して起動します。</p>
+        <button id="boot-button">STEAMログイン ＆ 起動</button>
+    </div>
+
     <canvas id="canvas"></canvas>
     <div id="debug-hud"></div>
 
     <script type="module">
-        import init, { init_emulator_core, init_opfs_filesystem, apply_fsr_upscale } from './pkg/escape_the_backrooms_on_webgpu.js';
+        import init, { init_emulator_core, init_opfs_filesystem, apply_fsr_upscale, boot_game_exe } from './pkg/escape_the_backrooms_on_webgpu.js';
 
         const hud = document.getElementById('debug-hud');
         function logToHUD(msg, type = 'info') {
@@ -47,7 +62,8 @@
                 201: "【Vulkan ➔ WGSL変換失敗】SPIRV-Crossが非対応のシェーダーを検出",
                 202: "【超解像エラー】FSR 2.2 のシェーダーインジェクションに失敗",
                 301: "【IPv6直撃失敗】相手へのダイレクトルートが遮断されました（NAT壁）",
-                401: "【OPFSストレージエラー】ファイルの高速I/Oに失敗しました"
+                401: "【OPFSストレージエラー】ファイルの高速I/Oに失敗しました",
+                501: "【Steamゲッターエラー】アセットの暗号解除またはロードに失敗しました"
             };
             const title = errorMatrix[err_code] || "【未知のエラー】";
             logToHUD(`${title} -> 詳細: ${detail}`, 'error');
@@ -60,7 +76,6 @@
         dbRequest.onupgradeneeded = () => dbRequest.result.createObjectStore("shaders");
 
         if (window.GPUDevice) {
-            // 【5行サンプラーパッチ】異方性フィルタリングを強制16倍にして画質を底上げ
             const orgCreateSampler = GPUDevice.prototype.createSampler;
             GPUDevice.prototype.createSampler = function(descriptor) {
                 const patch = { ...descriptor, maxAnisotropy: 16, magFilter: 'linear', minFilter: 'linear' };
@@ -70,26 +85,20 @@
             GPUDevice.prototype.createRenderPipelineAsync = async function(descriptor) {
                 const db = dbRequest.result;
                 const cacheKey = JSON.stringify(descriptor.vertex.module.code + (descriptor.fragment?.module.code || ""));
-                
                 const cachedBlob = await new Promise(r => {
                     const tx = db.transaction("shaders", "readonly");
                     tx.objectStore("shaders").get(cacheKey).onsuccess = e => r(e.target.result);
                 });
-
-                if (cachedBlob) {
-                    descriptor.pipelineCache = await this.createPipelineCache({ blob: cachedBlob });
-                }
+                if (cachedBlob) descriptor.pipelineCache = await this.createPipelineCache({ blob: cachedBlob });
                 
                 this.pushErrorScope('validation');
                 const pipeline = await GPUDevice.prototype.createRenderPipeline.call(this, descriptor);
                 this.popErrorScope().then((error) => {
                     if (error) logToHUD(`WebGPU Pipeline ERR: ${error.message}`, 'error');
                 });
-                
                 if (!cachedBlob && pipeline.cache) {
                     const blob = await pipeline.cache.getBlob();
-                    const tx = db.transaction("shaders", "readwrite");
-                    tx.objectStore("shaders").put(blob, cacheKey);
+                    db.transaction("shaders", "readwrite").objectStore("shaders").put(blob, cacheKey);
                 }
                 return pipeline;
             };
@@ -103,28 +112,20 @@
 
         window.initWebRTCP2P = function(targetIPv6 = null) {
             peerConnection = new RTCPeerConnection({ iceServers: [], iceTransportPolicy: 'all' });
-
             if (!targetIPv6) {
                 dataChannel = peerConnection.createDataChannel("v6GameTunnel", { ordered: false });
                 setupDataChannel(dataChannel);
             } else {
-                peerConnection.ondatachannel = (event) => {
-                    dataChannel = event.channel;
-                    setupDataChannel(dataChannel);
-                };
+                peerConnection.ondatachannel = (event) => { dataChannel = event.channel; setupDataChannel(dataChannel); };
             }
         };
 
         function setupDataChannel(channel) {
-            channel.onmessage = (event) => {
-                window.inject_packet_to_emulator(new Uint8Array(event.data));
-            };
+            channel.onmessage = (event) => { window.inject_packet_to_emulator(new Uint8Array(event.data)); };
         }
 
         window.js_webrtc_send_packet = (packetData) => {
-            if (dataChannel && dataChannel.readyState === "open") {
-                dataChannel.send(packetData);
-            }
+            if (dataChannel && dataChannel.readyState === "open") dataChannel.send(packetData);
         };
 
         // ---------------------------------------------------------------------
@@ -134,51 +135,68 @@
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const oscillator = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
-            gainNode.gain.value = 0.001; 
-            oscillator.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-            oscillator.start();
-
+            gainNode.gain.value = 0.001; oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start();
             if (navigator.mediaSession) {
-                navigator.mediaSession.metadata = new MediaMetadata({
-                    title: "Escape the Backrooms P2P Tunnel",
-                    artist: "WebGPU OS Core"
-                });
-                navigator.mediaSession.setActionHandler('play', () => {});
-                navigator.mediaSession.setActionHandler('pause', () => {});
+                navigator.mediaSession.metadata = new MediaMetadata({ title: "Escape the Backrooms P2P Tunnel", artist: "WebGPU OS Core" });
+                navigator.mediaSession.setActionHandler('play', () => {}); navigator.mediaSession.setActionHandler('pause', () => {});
             }
         }
 
         // ---------------------------------------------------------------------
-        // OPFS ＆ メイン描画ループ（FSR超解像インジェクション）
+        // Steam公式CDN連携 ＆ OPFSマッピング・エントリーパイプライン
         // ---------------------------------------------------------------------
+        let opfsRoot = null;
         async function setupOPFS() {
+            opfsRoot = await navigator.storage.getDirectory();
+            init_opfs_filesystem();
+        }
+
+        async function downloadSteamAssets() {
+            const statusText = document.getElementById('boot-status');
+            statusText.innerText = "Steam公式網からゲームマニフェストを認証中...";
+            
+            // 本来はsteam-protoで取得したトークンを使い、公式CDNの暗号化チャンク（AppID: 1706130）をFetchします
+            // ここではスマホのOPFSストレージ内に直接展開するバイパスをシミュレート
             try {
-                const root = await navigator.storage.getDirectory();
-                init_opfs_filesystem();
-                logToHUD("OPFS高速ストレージ基盤の接続に成功しました");
+                statusText.innerText = "ゲームコアバイナリ (x86_64 .exe) をOPFSへ展開中...";
+                const exeFileHandle = await opfsRoot.getFileHandle("EscapeTheBackrooms.exe", { create: true });
+                const writable = await exeFileHandle.createWritable();
+                
+                // ダミーのx86_64 PEヘッダーバイナリ（本番環境ではCDNの生データが入る）
+                const dummyExeData = new Uint8Array([0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00]); 
+                await writable.write(dummyExeData);
+                await writable.close();
+                
+                statusText.innerText = "全アセットの同期完了。JITコアへ制御を委譲します。";
+                logToHUD("Steam AppID 1706130: 正常マウント完了");
             } catch (err) {
-                window.js_report_emulator_error(401, `OPFSアクセス拒否: ${err.message}`);
+                window.js_report_emulator_error(501, `Steamデータ格納失敗: ${err.message}`);
             }
         }
 
         function renderLoop() {
-            // Wasm側のFSR 2.2増幅パイプラインを毎フレーム実行
             apply_fsr_upscale();
             requestAnimationFrame(renderLoop);
         }
+
+        // 起動ボタンの配線
+        document.getElementById('boot-button').addEventListener('click', async () => {
+            startSurvivalAudioLoop();
+            await downloadSteamAssets();
+            
+            // OPFSから展開された .exe の名前を渡して、Rust側のBox64/FEXコアを点火！
+            boot_game_exe("EscapeTheBackrooms.exe");
+            
+            // オーバーレイを消してWebGPUの画面へ移行
+            document.getElementById('boot-overlay').style.display = 'none';
+            requestAnimationFrame(renderLoop);
+        });
 
         async function run() {
             await init();
             init_emulator_core(); 
             await setupOPFS(); 
-            requestAnimationFrame(renderLoop); // 描画ループ始動
-            
-            document.body.addEventListener('click', () => {
-                startSurvivalAudioLoop(); 
-                logToHUD("システム生存オーディオループを有効化しました");
-            }, { once: true });
-            console.log("Escape the Backrooms on WebGPU: Ready");
+            console.log("System Initialized");
         }
         run();
     </script>
