@@ -1,0 +1,8 @@
+{
+  "name": "steam-crossplay-gateway",
+  "main": "worker.js",
+  "compatibility_date": "2026-06-27",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
+}
