@@ -15,53 +15,23 @@ pub fn boot_game_exe(exe_name: &str) { console_log(&format!("Booting x86_64 Core
 #[wasm_bindgen]
 pub fn apply_fsr_upscale() {}
 
-// ---------------------------------------------------------------------
-// 仮想ゲームパッド 入力レシーバーハック
-// ---------------------------------------------------------------------
 #[wasm_bindgen]
 pub fn inject_keyboard_input(key_code: &str, is_pressed: bool) {
-    // JSのKeyIDから、Windowsの仮想キーコード（Virtual Key Code）へのマッピング
     let win_vk: u32 = match key_code {
-        "KeyW" => 0x57,        // W
-        "KeyA" => 0x41,        // A
-        "KeyS" => 0x53,        // S
-        "KeyD" => 0x43,        // D
-        "KeyQ" => 0x51,        // Q (左リーン)
-        "KeyE" => 0x45,        // E (右リーン)
-        "KeyF" => 0x46,        // F (交流)
-        "KeyV" => 0x56,        // V (話す)
-        "KeyI" => 0x49,        // I (インベントリ)
-        "KeyC" => 0x43,        // C (カード提示)
-        "Tab" => 0x09,         // Tab (プレイヤーリスト)
-        "Enter" => 0x0D,       // Enter (チャット)
-        "ShiftLeft" => 0x10,   // Left Shift (走る)
-        "ControlLeft" => 0x11, // Left Ctrl (しゃがむ)
-        "Digit1" => 0x31,      // 1スロット
-        "Digit2" => 0x32,      // 2スロット
-        "Digit3" => 0x33,      // 3スロット
-        "LClick" => 0x01,      // マウス左クリック扱い（アイテム使用）
+        "KeyW" => 0x57, "KeyA" => 0x41, "KeyS" => 0x53, "KeyD" => 0x43,
+        "KeyQ" => 0x51, "KeyE" => 0x45, "KeyF" => 0x46, "KeyV" => 0x56, "KeyI" => 0x49, "KeyC" => 0x43,
+        "Tab" => 0x09, "Enter" => 0x0D, "ShiftLeft" => 0x10, "ControlLeft" => 0x11,
+        "Digit1" => 0x31, "Digit2" => 0x32, "Digit3" => 0x33, "LClick" => 0x01,
         _ => 0,
     };
-
     if win_vk == 0 { return; }
-
-    // Box64/FEX内のゲームエンジンのWndProc（ウィンドウメッセージハンドラ）へ直接注入
-    if is_pressed {
-        // Windowsメッセージ: WM_KEYDOWN または WM_LBUTTONDOWN をエミュレート
-        // console_log(&format!("VK 押下注入: 0x{:X}", win_vk));
-    } else {
-        // Windowsメッセージ: WM_KEYUP または WM_LBUTTONUP をエミュレート
-        // console_log(&format!("VK 解除注入: 0x{:X}", win_vk));
-    }
+    if is_pressed { /* WM_KEYDOWN エミュレート */ } else { /* WM_KEYUP エミュレート */ }
 }
 
 #[wasm_bindgen]
 pub fn inject_packet_to_emulator(packet: &[u8]) {}
 pub fn trigger_core_error(code: i32, detail: &str) { js_report_emulator_error(code, detail); }
 
-// =====================================================================
-// 50行の「極薄Steam-API Mock」
-// =====================================================================
 pub struct EscapeSteamMock;
 #[wasm_bindgen]
 impl EscapeSteamMock {
