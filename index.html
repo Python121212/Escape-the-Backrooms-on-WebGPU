@@ -23,7 +23,7 @@
     <div id="debug-hud"></div>
 
     <script type="module">
-        import init, { init_emulator_core, init_opfs_filesystem } from './pkg/escape_the_backrooms_on_webgpu.js';
+        import init, { init_emulator_core, init_opfs_filesystem, apply_fsr_upscale } from './pkg/escape_the_backrooms_on_webgpu.js';
 
         const hud = document.getElementById('debug-hud');
         function logToHUD(msg, type = 'info') {
@@ -45,6 +45,7 @@
                 101: "【x86_64 翻訳エラー】未実装のx86命令を検知しました",
                 102: "【メモリモデル衝突】TSO同期中にデッドロックの兆候を検知",
                 201: "【Vulkan ➔ WGSL変換失敗】SPIRV-Crossが非対応のシェーダーを検出",
+                202: "【超解像エラー】FSR 2.2 のシェーダーインジェクションに失敗",
                 301: "【IPv6直撃失敗】相手へのダイレクトルートが遮断されました（NAT壁）",
                 401: "【OPFSストレージエラー】ファイルの高速I/Oに失敗しました"
             };
@@ -53,12 +54,19 @@
         };
 
         // ---------------------------------------------------------------------
-        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化
+        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化 ＆ 5行サンプラーフック
         // ---------------------------------------------------------------------
         const dbRequest = indexedDB.open("WebGPUShaderCache", 1);
         dbRequest.onupgradeneeded = () => dbRequest.result.createObjectStore("shaders");
 
         if (window.GPUDevice) {
+            // 【5行サンプラーパッチ】異方性フィルタリングを強制16倍にして画質を底上げ
+            const orgCreateSampler = GPUDevice.prototype.createSampler;
+            GPUDevice.prototype.createSampler = function(descriptor) {
+                const patch = { ...descriptor, maxAnisotropy: 16, magFilter: 'linear', minFilter: 'linear' };
+                return orgCreateSampler.call(this, patch);
+            };
+
             GPUDevice.prototype.createRenderPipelineAsync = async function(descriptor) {
                 const db = dbRequest.result;
                 const cacheKey = JSON.stringify(descriptor.vertex.module.code + (descriptor.fragment?.module.code || ""));
@@ -111,9 +119,6 @@
             channel.onmessage = (event) => {
                 window.inject_packet_to_emulator(new Uint8Array(event.data));
             };
-            channel.onerror = (err) => {
-                logToHUD(`通信チャンネルエラーが発生しました`, 'error');
-            };
         }
 
         window.js_webrtc_send_packet = (packetData) => {
@@ -145,13 +150,11 @@
         }
 
         // ---------------------------------------------------------------------
-        // OPFS (Origin Private File System) 初期化支援ブリッジ
+        // OPFS ＆ メイン描画ループ（FSR超解像インジェクション）
         // ---------------------------------------------------------------------
         async function setupOPFS() {
             try {
-                // ブラウザの高速ファイルシステムのルートハンドルを取得
                 const root = await navigator.storage.getDirectory();
-                // Wasm側にOPFSが利用可能であることを通知
                 init_opfs_filesystem();
                 logToHUD("OPFS高速ストレージ基盤の接続に成功しました");
             } catch (err) {
@@ -159,10 +162,18 @@
             }
         }
 
+        function renderLoop() {
+            // Wasm側のFSR 2.2増幅パイプラインを毎フレーム実行
+            apply_fsr_upscale();
+            requestAnimationFrame(renderLoop);
+        }
+
         async function run() {
             await init();
             init_emulator_core(); 
-            await setupOPFS(); // OPFS起動
+            await setupOPFS(); 
+            requestAnimationFrame(renderLoop); // 描画ループ始動
+            
             document.body.addEventListener('click', () => {
                 startSurvivalAudioLoop(); 
                 logToHUD("システム生存オーディオループを有効化しました");
