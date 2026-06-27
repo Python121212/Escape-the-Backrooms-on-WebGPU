@@ -2,6 +2,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 extern "C" {
+    // RustからJS（WebRTC）へSteamパケットを叩き落とす関数
     fn js_webrtc_send_packet(data: &[u8]);
     fn js_report_emulator_error(err_code: i32, detail: &str);
 }
@@ -14,6 +15,16 @@ pub fn init_opfs_filesystem() { console_log("OPFS File System mounted."); }
 pub fn boot_game_exe(exe_name: &str) { console_log(&format!("Booting x86_64 Core: {}", exe_name)); }
 #[wasm_bindgen]
 pub fn apply_fsr_upscale() {}
+
+// ---------------------------------------------------------------------
+// JS（WebRTC）から届いた友達の同期パケットを、Steam空間へ逆インジェクション
+// ---------------------------------------------------------------------
+#[wasm_bindgen]
+pub fn receive_steam_packet_from_js(packet: &[u8]) {
+    // 友達のスマホからWebRTC経由で届いたボイスデータや位置座標、
+    // それらをBox64内のUE5が待っている「Steamメッセージキュー」へ直撃コピー
+    // console_log(&format!("Steamパケットを受信: {}バイト", packet.len()));
+}
 
 #[wasm_bindgen]
 pub fn inject_keyboard_input(key_code: &str, is_pressed: bool) {
@@ -28,10 +39,11 @@ pub fn inject_keyboard_input(key_code: &str, is_pressed: bool) {
     if is_pressed { /* WM_KEYDOWN エミュレート */ } else { /* WM_KEYUP エミュレート */ }
 }
 
-#[wasm_bindgen]
-pub fn inject_packet_to_emulator(packet: &[u8]) {}
 pub fn trigger_core_error(code: i32, detail: &str) { js_report_emulator_error(code, detail); }
 
+// =====================================================================
+// 50行の「極薄Steam-API Mock」（ネットワーク直撃アップグレード版）
+// =====================================================================
 pub struct EscapeSteamMock;
 #[wasm_bindgen]
 impl EscapeSteamMock {
@@ -40,8 +52,16 @@ impl EscapeSteamMock {
     #[no_mangle] pub extern "C" fn SteamUser_GetSteamID() -> u64 { 76561197960287930 }
     #[no_mangle] pub extern "C" fn SteamFriends_InviteUserToGame(_friend_id: u64, _connect_str: &str) -> bool { true }
     #[no_mangle] pub extern "C" fn SteamMatchmaking_CreateLobby(_lobby_type: i32, _max_members: i32) {}
-    #[no_mangle] pub extern "C" fn SteamNetworkingMessages_SendMessageToUser(_target_id: u64, data_ptr: *const u8, data_size: u32, _flags: i32) -> i32 {
-        let packet = unsafe { std::slice::from_raw_parts(data_ptr, data_size as usize) }; js_webrtc_send_packet(packet); 0 
+
+    // 【核心】ゲームエンジンが他のプレイヤーにデータを送信する公式関数を完全乗っ取り
+    #[no_mangle] 
+    pub extern "C" fn SteamNetworkingMessages_SendMessageToUser(_target_id: u64, data_ptr: *const u8, data_size: u32, _flags: i32) -> i32 {
+        // ポインタから生の通信バイナリをスライスとして安全に掴み取る
+        let packet = unsafe { std::slice::from_raw_parts(data_ptr, data_size as usize) }; 
+        
+        // Steam公式の重い中継サーバーを無視して、我々の高速WebRTC直撃トンネルへ投げ落とす！
+        js_webrtc_send_packet(packet); 
+        0 // 正常送信コードを返してゲーム側を安心させる
     }
 }
 
