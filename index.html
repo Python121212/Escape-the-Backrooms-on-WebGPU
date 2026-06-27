@@ -27,22 +27,11 @@
         }
         .err-line { color: #ff3333; font-weight: bold; }
 
-        /* ---------------------------------------------------------------------
-           Steam P2P ネットワーク接続管理UI
-        --------------------------------------------------------------------- */
-        #p2p-network-panel {
-            position: absolute; top: 10px; right: 10px; background: rgba(20, 20, 20, 0.85);
-            padding: 8px; border-radius: 5px; border: 1px solid #00ffcc;
-            font-family: monospace; font-size: 11px; color: #fff; z-index: 6000; display: none;
-            pointer-events: auto; width: 240px;
-        }
-        #p2p-network-panel input {
-            width: 100%; background: #000; color: #00ffcc; border: 1px solid #444;
-            font-size: 11px; padding: 3px; margin: 4px 0; box-sizing: border-box;
-        }
-        #p2p-connect-btn {
-            width: 100%; background: #00ffcc; color: #000; border: none;
-            padding: 4px; font-weight: bold; cursor: pointer; font-size: 11px;
+        /* クロスプレイネットワーク状態インジケーター */
+        #cross-status-panel {
+            position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.8);
+            padding: 5px 10px; border-radius: 3px; border: 1px solid #00ffcc;
+            font-family: monospace; font-size: 10px; color: #00ffcc; z-index: 6000; display: none;
         }
 
         /* 仮想ゲームパッド UI */
@@ -74,11 +63,7 @@
     <canvas id="canvas"></canvas>
     <div id="debug-hud"></div>
 
-    <div id="p2p-network-panel">
-        <div>MY ID: <span id="my-p2p-id" style="color:#00ffcc;">GENERATING...</span></div>
-        <input type="text" id="target-p2p-id" placeholder="友達のP2P IDを入力">
-        <button id="p2p-connect-btn">マルチプレイ接続直撃</button>
-    </div>
+    <div id="cross-status-panel">CROSSPLAY GATEWAY: <span id="net-state">DISCONNECTED</span></div>
 
     <div id="gamepad-container">
         <div class="v-btn" id="v-w" data-key="KeyW">W</div><div class="v-btn" id="v-a" data-key="KeyA">A</div><div class="v-btn" id="v-s" data-key="KeyS">S</div><div class="v-btn" id="v-d" data-key="KeyD">D</div>
@@ -94,16 +79,46 @@
         const hud = document.getElementById('debug-hud');
         function logToHUD(msg, type = 'info') {
             hud.style.display = 'block'; 
-            const div = document.createElement('div');
-            div.className = type === 'error' ? 'err-line' : '';
-            div.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
-            hud.appendChild(div); hud.scrollTop = hud.scrollHeight; 
+            const div = document.createElement('div'); div.className = type === 'error' ? 'err-line' : '';
+            div.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`; hud.appendChild(div); hud.scrollTop = hud.scrollHeight; 
         }
 
-        window.onerror = function(message, source, lineno, colno, error) {
-            logToHUD(`CRITICAL: ${message} (${source}:${lineno})`, 'error'); return false;
+        // ---------------------------------------------------------------------
+        // クロスプレイ専用・自動リアルタイムゲートウェイ配線
+        // ---------------------------------------------------------------------
+        let gatewaySocket = null;
+
+        function connectToCrossplayGateway() {
+            // 本番運用時はここにgateway.jsを走らせているサーバーのIP/ドメインを指定します
+            gatewaySocket = new WebSocket("ws://localhost:8080"); 
+            gatewaySocket.binaryType = "arraybuffer";
+
+            gatewaySocket.onopen = () => {
+                document.getElementById('net-state').innerText = "CONNECTED (ONLINE)";
+                logToHUD("Steam次元架橋ゲートウェイとの接続に成功。クロスプレイ準備完了。");
+            };
+
+            gatewaySocket.onmessage = (event) => {
+                // PC版の友達からゲートウェイ経由で送られてきた生のSteamパケットをキャッチ
+                const binary = new Uint8Array(event.data);
+                // スマホ側のUnreal Engine 5の心臓部（Rust）へそのままバイパス流し込み
+                receive_steam_packet_from_js(binary);
+            };
+
+            gatewaySocket.onclose = () => {
+                document.getElementById('net-state').innerText = "DISCONNECTED";
+                // 1秒後に自動再接続を試み、地下移動中のパケットロスを完全に耐え切る
+                setTimeout(connectToCrossplayGateway, 1000); 
+            };
+        }
+
+        // Rust（SendMessageToUser）側からパケットがドロップしてきた時の自動送信トリガー
+        window.js_webrtc_send_packet = (packetData) => {
+            if (gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN) {
+                // 友達のPCのSteamIDに向けて、ゲートウェイ経由でパケットを爆速射出
+                gatewaySocket.send(packetData); 
+            }
         };
-        window.js_report_emulator_error = (err_code, detail) => { logToHUD(`ERROR [${err_code}]: ${detail}`, 'error'); };
 
         // ハック①：GPUPipelineCache ✕ IndexedDB ✕ 5行サンプラー
         const dbRequest = indexedDB.open("WebGPUShaderCache", 1);
@@ -121,64 +136,11 @@
             };
         }
 
-        // ---------------------------------------------------------------------
-        // ハック②：STUN/TURN完全排除 ✕ Steam Networking - WebRTCダイレクトトンネル
-        // ---------------------------------------------------------------------
-        let peerConnection = null; 
-        let dataChannel = null;
-
-        window.initWebRTCP2P = function() {
-            peerConnection = new RTCPeerConnection({ iceServers: [], iceTransportPolicy: 'all' });
-            
-            // 自分の仮シグナリングID（実運用では暗号化されたローカルIPv6トークン等）
-            document.getElementById('my-p2p-id').innerText = Math.floor(100000 + Math.random() * 900000);
-
-            // ホスト側：データチャンネルを切り開く（Steamパケット送受信用）
-            dataChannel = peerConnection.createDataChannel("steamNetworkBridge", { ordered: false, maxRetransmits: 0 }); // 速度優先の非信頼転送
-            setupDataChannel(dataChannel);
-
-            peerConnection.onicecandidate = (e) => {
-                if (e.candidate) console.log("ICE Candidate (Local Link Only):", e.candidate.candidate);
-            };
-        };
-
-        function setupDataChannel(channel) {
-            channel.onopen = () => logToHUD("Steam互換 P2Pデータトンネルが完全開通！");
-            channel.onmessage = (event) => {
-                // 友達のスマホからWebRTC経由でパケットが届いたら、そのままWasm内のSteamAPI Mockへ直撃流し込み
-                const binaryData = new Uint8Array(event.data);
-                receive_steam_packet_from_js(binaryData);
-            };
-            channel.onerror = () => logToHUD("通信トンネルにエラーが発生しました", "error");
-        }
-
-        // Rust側（SteamAPI_SendMessageToUser）からパケットがドロップしてきたときに呼ばれるトリガー
-        window.js_webrtc_send_packet = (packetData) => {
-            if (dataChannel && dataChannel.readyState === "open") {
-                dataChannel.send(packetData); // 友達のスマホへ超低遅延バイパス射出
-            }
-        };
-
-        // クライアント側からの手動接続シミュレータ配線
-        document.getElementById('p2p-connect-btn').addEventListener('click', () => {
-            const targetId = document.getElementById('target-p2p-id').value;
-            if(!targetId) return;
-            logToHUD(`ターゲットピア [${targetId}] へIPv6ルートを探索中...`);
-            
-            // シグナリングなしの直撃接続シーケンスのシミュレート開始
-            peerConnection.createOffer().then(offer => peerConnection.setLocalDescription(offer));
-            setTimeout(() => {
-                logToHUD("友達のスマホと完全同期。Unreal Engine 5のマルチセッションを開始します。");
-            }, 800);
-        });
-
-        // ハック③：MediaSession無音維持
         function startSurvivalAudioLoop() {
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)(); const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain();
             gainNode.gain.value = 0.001; oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start();
         }
 
-        // ゲームパッドブリッジ
         function setupVirtualGamepad() {
             document.querySelectorAll('.v-btn').forEach(btn => {
                 const keyCode = btn.getAttribute('data-key');
@@ -186,26 +148,22 @@
                 btn.addEventListener('touchend', (e) => { e.preventDefault(); inject_keyboard_input(keyCode, false); }, { passive: false });
             });
             document.getElementById('gamepad-container').style.display = 'block';
-            document.getElementById('p2p-network-panel').style.display = 'block'; // ネットワークパネル展開
+            document.getElementById('cross-status-panel').style.display = 'block'; // 状態パネル表示
         }
 
-        // メインシステム起動
         let opfsRoot = null;
         async function run() {
             await init(); init_emulator_core(); 
             opfsRoot = await navigator.storage.getDirectory(); init_opfs_filesystem();
-            window.initWebRTCP2P(); // ネットワークスタック初期化
+            connectToCrossplayGateway(); // ゲートウェイ自動常時接続
 
-            if ('serviceWorker' in navigator) {
-                navigator.serviceWorker.register('./sw.js').catch(err => console.log("SW登録省略:", err));
-            }
+            if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js').catch(err => console.log("SW:", err)); }
 
             document.getElementById('boot-button').addEventListener('click', async () => {
                 startSurvivalAudioLoop();
                 const file = await opfsRoot.getFileHandle("EscapeTheBackrooms.exe", { create: true });
                 const writable = await file.createWritable(); await writable.write(new Uint8Array([0x4D, 0x5A])); await writable.close();
-                boot_game_exe("EscapeTheBackrooms.exe");
-                setupVirtualGamepad();
+                boot_game_exe("EscapeTheBackrooms.exe"); setupVirtualGamepad();
                 document.getElementById('boot-overlay').style.display = 'none';
                 setInterval(apply_fsr_upscale, 16);
             });
