@@ -7,16 +7,58 @@
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
         #canvas { width: 100%; height: 100%; display: block; }
+        
+        /* エラー可視化HUDの専用スタイル */
+        #debug-hud {
+            position: absolute; top: 10px; left: 10px; width: calc(100% - 20px); max-height: 200px;
+            background: rgba(0, 0, 0, 0.85); color: #00ffcc; font-family: monospace; font-size: 11px;
+            padding: 10px; border-radius: 5px; overflow-y: auto; z-index: 9999;
+            border: 1px solid #00ffcc; pointer-events: none; display: none;
+        }
+        .err-line { color: #ff3333; font-weight: bold; }
+        .warn-line { color: #ffaa00; }
     </style>
 </head>
 <body>
     <canvas id="canvas"></canvas>
+    <div id="debug-hud"></div>
 
     <script type="module">
         import init, { init_emulator_core } from './pkg/escape_the_backrooms_on_webgpu.js';
 
         // ---------------------------------------------------------------------
-        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化（プチフリ完全消滅）
+        // エラーデバッグHUDの制御ロジック
+        // ---------------------------------------------------------------------
+        const hud = document.getElementById('debug-hud');
+        function logToHUD(msg, type = 'info') {
+            hud.style.display = 'block'; 
+            const div = document.createElement('div');
+            div.className = type === 'error' ? 'err-line' : (type === 'warn' ? 'warn-line' : '');
+            div.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            hud.appendChild(div);
+            hud.scrollTop = hud.scrollHeight; 
+        }
+
+        // ブラウザ全体の未キャッチエラー・Wasmクラッシュを完全捕捉
+        window.onerror = function(message, source, lineno, colno, error) {
+            logToHUD(`CRITICAL: ${message} (${source}:${lineno})`, 'error');
+            return false;
+        };
+
+        // Rust側（エミュレータ核心部）からエラーコードを受け取る配線
+        window.js_report_emulator_error = (err_code, detail) => {
+            const errorMatrix = {
+                101: "【x86_64 翻訳エラー】未実装のx86命令を検知しました",
+                102: "【メモリモデル衝突】TSO同期中にデッドロックの兆候を検知",
+                201: "【Vulkan ➔ WGSL変換失敗】SPIRV-Crossが非対応のシェーダーを検出",
+                301: "【IPv6直撃失敗】相手へのダイレクトルートが遮断されました（NAT壁）"
+            };
+            const title = errorMatrix[err_code] || "【未知のエラー】";
+            logToHUD(`${title} -> 詳細: ${detail}`, 'error');
+        };
+
+        // ---------------------------------------------------------------------
+        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化（プチフリ消滅）
         // ---------------------------------------------------------------------
         const dbRequest = indexedDB.open("WebGPUShaderCache", 1);
         dbRequest.onupgradeneeded = () => dbRequest.result.createObjectStore("shaders");
@@ -35,7 +77,12 @@
                     descriptor.pipelineCache = await this.createPipelineCache({ blob: cachedBlob });
                 }
                 
+                // WebGPUデバイスのエラーキャッチスコープを設置
+                this.pushErrorScope('validation');
                 const pipeline = await GPUDevice.prototype.createRenderPipeline.call(this, descriptor);
+                this.popErrorScope().then((error) => {
+                    if (error) logToHUD(`WebGPU Pipeline ERR: ${error.message}`, 'error');
+                });
                 
                 if (!cachedBlob && pipeline.cache) {
                     const blob = await pipeline.cache.getBlob();
@@ -53,7 +100,6 @@
         let dataChannel = null;
 
         window.initWebRTCP2P = function(targetIPv6 = null) {
-            // ICEサーバー空っぽ固定。STUN/TURNへの無駄パケットを物理シャットアウト
             peerConnection = new RTCPeerConnection({ iceServers: [], iceTransportPolicy: 'all' });
 
             if (!targetIPv6) {
@@ -69,25 +115,27 @@
 
         function setupDataChannel(channel) {
             channel.onmessage = (event) => {
-                // 友達から届いた生パケットをWasmのエミュレータメモリへダイレクトインジェクション
                 window.inject_packet_to_emulator(new Uint8Array(event.data));
+            };
+            channel.onerror = (err) => {
+                logToHUD(`通信チャンネルエラーが発生しました`, 'error');
             };
         }
 
         window.js_webrtc_send_packet = (packetData) => {
             if (dataChannel && dataChannel.readyState === "open") {
-                dataChannel.send(packetData); // 生パケットをIPv6の土管へストレート射出
+                dataChannel.send(packetData);
             }
         };
 
         // ---------------------------------------------------------------------
-        // ハック③：MediaSession APIによる無音維持（Android Dozeモード完全回避）
+        // ハック③：MediaSession APIによる無音維持（Dozeモード回避）
         // ---------------------------------------------------------------------
         function startSurvivalAudioLoop() {
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const oscillator = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
-            gainNode.gain.value = 0.001; // 人間には完全に聞こえないレベルの極小音
+            gainNode.gain.value = 0.001; 
             oscillator.connect(gainNode);
             gainNode.connect(audioCtx.destination);
             oscillator.start();
@@ -97,7 +145,6 @@
                     title: "Escape the Backrooms P2P Tunnel",
                     artist: "WebGPU OS Core"
                 });
-                // 再生状態をキープし、ブラウザのバックグラウンド通信切断を防止
                 navigator.mediaSession.setActionHandler('play', () => {});
                 navigator.mediaSession.setActionHandler('pause', () => {});
             }
@@ -105,9 +152,10 @@
 
         async function run() {
             await init();
-            init_emulator_core(); // 動的コンテナのJITブート
+            init_emulator_core(); 
             document.body.addEventListener('click', () => {
-                startSurvivalAudioLoop(); // 画面タップで生存ループ開始
+                startSurvivalAudioLoop(); 
+                logToHUD("システム生存オーディオループを有効化しました");
             }, { once: true });
             console.log("Escape the Backrooms on WebGPU: Ready");
         }
