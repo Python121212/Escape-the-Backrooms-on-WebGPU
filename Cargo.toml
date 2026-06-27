@@ -2,36 +2,10 @@
 name = "escape-the-backrooms-on-webgpu"
 version = "1.0.0"
 edition = "2021"
-authors = ["Your Name"]
-description = "Dynamic Hybrid x86_64 Emulator on WebAssembly (Box64 + FEX-IR + WebGPU)"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# WebAssembly ＆ JavaScript 高速相互バインド
 wasm-bindgen = "0.2"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = [
-    "Window", "Document", "GpuDevice", "GpuAdapter", 
-    "RtcPeerConnection", "RtcDataChannel", "MediaSession", "MediaMetadata"
-] }
-
-# 動的翻訳時のボトルネックを消し去るFEX-Emu思想のIR最適化エンジン
-fex-wasm-jit = { version = "0.1", features = ["ir-optimization", "dynamic-mode"] }
-
-# グラフィックス ＆ 爆速超解像レイヤー
-wgpu-hal = { version = "0.19", features = ["vulkan", "gles"] }
-wgpu-fsr = { version = "0.1", features = ["fsr2", "cas"] }
-
-# 50行Mockおよびチャット・招待用プロトコル
-steam-proto = { version = "0.2", features = ["friends", "chat", "protobuf"] }
-
-# マルチWorker間のMutex競合を撲滅するスレッドローカル・アロケータ
-mimalloc = { version = "0.1", default-features = false, features = ["secure"] }
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
+web-sys = { version = "0.3", features = ["console"] }
