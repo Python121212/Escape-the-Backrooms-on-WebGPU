@@ -1,0 +1,21 @@
+ {
+  "short_name": "BackroomsGPU",
+  "name": "Escape the Backrooms on WebGPU",
+  "icons": [
+    {
+      "src": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=192&q=80",
+      "type": "image/jpeg",
+      "sizes": "192x192"
+    },
+    {
+      "src": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=512&q=80",
+      "type": "image/jpeg",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "./index.html",
+  "background_color": "#111111",
+  "theme_color": "#00ffcc",
+  "display": "fullscreen",
+  "orientation": "landscape"
+}
