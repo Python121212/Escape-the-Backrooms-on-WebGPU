@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Escape the Backrooms on WebGPU</title>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; user-select: none; -webkit-user-select: none; }
         #canvas { width: 100%; height: 100%; display: block; }
         
         #debug-hud {
-            position: absolute; top: 10px; left: 10px; width: calc(100% - 20px); max-height: 200px;
+            position: absolute; top: 10px; left: 10px; width: calc(100% - 20px); max-height: 120px;
             background: rgba(0, 0, 0, 0.85); color: #00ffcc; font-family: monospace; font-size: 11px;
             padding: 10px; border-radius: 5px; overflow-y: auto; z-index: 9999;
             border: 1px solid #00ffcc; pointer-events: none; display: none;
@@ -24,7 +24,49 @@
             border: none; border-radius: 5px; cursor: pointer; font-weight: bold;
         }
         .err-line { color: #ff3333; font-weight: bold; }
-        .warn-line { color: #ffaa00; }
+
+        /* ---------------------------------------------------------------------
+           仮想ゲームパッド UIレイアウト
+        --------------------------------------------------------------------- */
+        #gamepad-container {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 5000; display: none;
+        }
+        .v-btn {
+            position: absolute; width: 50px; height: 50px; background: rgba(255,255,255,0.15);
+            color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 25px;
+            display: flex; justify-content: center; align-items: center;
+            font-family: monospace; font-size: 12px; font-weight: bold; pointer-events: auto;
+            backdrop-filter: blur(2px); WebkitBackdropFilter: blur(2px);
+        }
+        .v-btn:active { background: rgba(0, 255, 204, 0.4); border-color: #00ffcc; color: #00ffcc; }
+        
+        /* 左側：移動十字方向（W/A/S/D） */
+        #v-w { left: 70px; bottom: 130px; }
+        #v-a { left: 15px; bottom: 75px; }
+        #v-s { left: 70px; bottom: 20px; }
+        #v-d { left: 125px; bottom: 75px; }
+
+        /* 右側：メインアクション（クリック、交流、走る、しゃがむ） */
+        #v-click { right: 20px; bottom: 80px; width: 70px; height: 70px; border-radius: 35px; font-size: 14px; background: rgba(0,255,204,0.15); } /* アイテム使用 */
+        #v-f { right: 105px; bottom: 90px; }    /* 交流 */
+        #v-shift { right: 20px; bottom: 165px; background: rgba(255,50,50,0.15); } /* 走る */
+        #v-ctrl { right: 85px; bottom: 25px; }   /* しゃがむ */
+
+        /* 中央下・上部：ユーティリティ（インベントリ、スロット、チャットなど） */
+        #v-q { left: 20px; top: 20px; }         /* 左リーン */
+        #v-e { left: 80px; top: 20px; }         /* 右リーン */
+        #v-v { left: 140px; top: 20px; }        /* ボイス話す */
+        #v-tab { left: 20px; top: 80px; }       /* プレイヤーリスト */
+        
+        #v-i { right: 20px; top: 20px; }        /* インベントリ */
+        #v-c { right: 80px; top: 20px; }        /* カードを見せる */
+        #v-enter { right: 140px; top: 20px; }    /* チャット送信 */
+
+        /* アイテムスロット（画面下部中央） */
+        #v-1 { left: calc(50% - 85px); bottom: 20px; }
+        #v-2 { left: calc(50% - 25px); bottom: 20px; }
+        #v-3 { left: calc(50% - -35px); bottom: 20px; }
     </style>
 </head>
 <body>
@@ -37,14 +79,35 @@
     <canvas id="canvas"></canvas>
     <div id="debug-hud"></div>
 
+    <div id="gamepad-container">
+        <div class="v-btn" id="v-w" data-key="KeyW">W</div>
+        <div class="v-btn" id="v-a" data-key="KeyA">A</div>
+        <div class="v-btn" id="v-s" data-key="KeyS">S</div>
+        <div class="v-btn" id="v-d" data-key="KeyD">D</div>
+        <div class="v-btn" id="v-q" data-key="KeyQ">Q</div>
+        <div class="v-btn" id="v-e" data-key="KeyE">E</div>
+        <div class="v-btn" id="v-v" data-key="KeyV">V</div>
+        <div class="v-btn" id="v-tab" data-key="Tab">TAB</div>
+        <div class="v-btn" id="v-click" data-key="LClick">USE</div>
+        <div class="v-btn" id="v-f" data-key="KeyF">F</div>
+        <div class="v-btn" id="v-shift" data-key="ShiftLeft">RUN</div>
+        <div class="v-btn" id="v-ctrl" data-key="ControlLeft">CTRL</div>
+        <div class="v-btn" id="v-i" data-key="KeyI">INV</div>
+        <div class="v-btn" id="v-c" data-key="KeyC">CARD</div>
+        <div class="v-btn" id="v-enter" data-key="Enter">TXT</div>
+        <div class="v-btn" id="v-1" data-key="Digit1">1</div>
+        <div class="v-btn" id="v-2" data-key="Digit2">2</div>
+        <div class="v-btn" id="v-3" data-key="Digit3">3</div>
+    </div>
+
     <script type="module">
-        import init, { init_emulator_core, init_opfs_filesystem, apply_fsr_upscale, boot_game_exe } from './pkg/escape_the_backrooms_on_webgpu.js';
+        import init, { init_emulator_core, init_opfs_filesystem, apply_fsr_upscale, boot_game_exe, inject_keyboard_input } from './pkg/escape_the_backrooms_on_webgpu.js';
 
         const hud = document.getElementById('debug-hud');
         function logToHUD(msg, type = 'info') {
             hud.style.display = 'block'; 
             const div = document.createElement('div');
-            div.className = type === 'error' ? 'err-line' : (type === 'warn' ? 'warn-line' : '');
+            div.className = type === 'error' ? 'err-line' : '';
             div.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
             hud.appendChild(div);
             hud.scrollTop = hud.scrollHeight; 
@@ -56,21 +119,11 @@
         };
 
         window.js_report_emulator_error = (err_code, detail) => {
-            const errorMatrix = {
-                101: "【x86_64 翻訳エラー】未実装のx86命令を検知しました",
-                102: "【メモリモデル衝突】TSO同期中にデッドロックの兆候を検知",
-                201: "【Vulkan ➔ WGSL変換失敗】SPIRV-Crossが非対応のシェーダーを検出",
-                202: "【超解像エラー】FSR 2.2 のシェーダーインジェクションに失敗",
-                301: "【IPv6直撃失敗】相手へのダイレクトルートが遮断されました（NAT壁）",
-                401: "【OPFSストレージエラー】ファイルの高速I/Oに失敗しました",
-                501: "【Steamゲッターエラー】アセットの暗号解除またはロードに失敗しました"
-            };
-            const title = errorMatrix[err_code] || "【未知のエラー】";
-            logToHUD(`${title} -> 詳細: ${detail}`, 'error');
+            logToHUD(`ERROR [${err_code}]: ${detail}`, 'error');
         };
 
         // ---------------------------------------------------------------------
-        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化 ＆ 5行サンプラーフック
+        // ハック①：GPUPipelineCache ✕ IndexedDB 永続化 ＆ 5行サンプラー
         // ---------------------------------------------------------------------
         const dbRequest = indexedDB.open("WebGPUShaderCache", 1);
         dbRequest.onupgradeneeded = () => dbRequest.result.createObjectStore("shaders");
@@ -78,24 +131,17 @@
         if (window.GPUDevice) {
             const orgCreateSampler = GPUDevice.prototype.createSampler;
             GPUDevice.prototype.createSampler = function(descriptor) {
-                const patch = { ...descriptor, maxAnisotropy: 16, magFilter: 'linear', minFilter: 'linear' };
-                return orgCreateSampler.call(this, patch);
+                return orgCreateSampler.call(this, { ...descriptor, maxAnisotropy: 16, magFilter: 'linear', minFilter: 'linear' });
             };
 
             GPUDevice.prototype.createRenderPipelineAsync = async function(descriptor) {
                 const db = dbRequest.result;
                 const cacheKey = JSON.stringify(descriptor.vertex.module.code + (descriptor.fragment?.module.code || ""));
                 const cachedBlob = await new Promise(r => {
-                    const tx = db.transaction("shaders", "readonly");
-                    tx.objectStore("shaders").get(cacheKey).onsuccess = e => r(e.target.result);
+                    db.transaction("shaders", "readonly").objectStore("shaders").get(cacheKey).onsuccess = e => r(e.target.result);
                 });
                 if (cachedBlob) descriptor.pipelineCache = await this.createPipelineCache({ blob: cachedBlob });
-                
-                this.pushErrorScope('validation');
                 const pipeline = await GPUDevice.prototype.createRenderPipeline.call(this, descriptor);
-                this.popErrorScope().then((error) => {
-                    if (error) logToHUD(`WebGPU Pipeline ERR: ${error.message}`, 'error');
-                });
                 if (!cachedBlob && pipeline.cache) {
                     const blob = await pipeline.cache.getBlob();
                     db.transaction("shaders", "readwrite").objectStore("shaders").put(blob, cacheKey);
@@ -105,98 +151,69 @@
         }
 
         // ---------------------------------------------------------------------
-        // ハック②：STUN/TURN完全排除 ✕ IPv6ダイレクトP2P
+        // ハック②：STUN/TURN完全排除 ✕ IPv6P2P ＆ ハック③：MediaSession無音
         // ---------------------------------------------------------------------
-        let peerConnection = null;
-        let dataChannel = null;
-
+        let peerConnection = null; let dataChannel = null;
         window.initWebRTCP2P = function(targetIPv6 = null) {
             peerConnection = new RTCPeerConnection({ iceServers: [], iceTransportPolicy: 'all' });
-            if (!targetIPv6) {
-                dataChannel = peerConnection.createDataChannel("v6GameTunnel", { ordered: false });
-                setupDataChannel(dataChannel);
-            } else {
-                peerConnection.ondatachannel = (event) => { dataChannel = event.channel; setupDataChannel(dataChannel); };
-            }
+            if (!targetIPv6) { dataChannel = peerConnection.createDataChannel("v6GameTunnel", { ordered: false }); setupDataChannel(dataChannel); }
+            else { peerConnection.ondatachannel = (event) => { dataChannel = event.channel; setupDataChannel(dataChannel); }; }
         };
+        function setupDataChannel(channel) { channel.onmessage = (event) => { window.inject_packet_to_emulator(new Uint8Array(event.data)); }; }
+        window.js_webrtc_send_packet = (packetData) => { if (dataChannel && dataChannel.readyState === "open") dataChannel.send(packetData); };
 
-        function setupDataChannel(channel) {
-            channel.onmessage = (event) => { window.inject_packet_to_emulator(new Uint8Array(event.data)); };
-        }
-
-        window.js_webrtc_send_packet = (packetData) => {
-            if (dataChannel && dataChannel.readyState === "open") dataChannel.send(packetData);
-        };
-
-        // ---------------------------------------------------------------------
-        // ハック③：MediaSession APIによる無音維持
-        // ---------------------------------------------------------------------
         function startSurvivalAudioLoop() {
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
+            const oscillator = audioCtx.createOscillator(); const gainNode = audioCtx.createGain();
             gainNode.gain.value = 0.001; oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start();
-            if (navigator.mediaSession) {
-                navigator.mediaSession.metadata = new MediaMetadata({ title: "Escape the Backrooms P2P Tunnel", artist: "WebGPU OS Core" });
-                navigator.mediaSession.setActionHandler('play', () => {}); navigator.mediaSession.setActionHandler('pause', () => {});
-            }
         }
 
         // ---------------------------------------------------------------------
-        // Steam公式CDN連携 ＆ OPFSマッピング・エントリーパイプライン
+        // 仮想ゲームパッド超低遅延ブリッジシステム
+        // ---------------------------------------------------------------------
+        function setupVirtualGamepad() {
+            const buttons = document.querySelectorAll('.v-btn');
+            
+            buttons.forEach(btn => {
+                const keyCode = btn.getAttribute('data-key');
+                
+                // タッチ開始時：Wasm側のBox64（Win32）へ「キー押下(True)」を通知
+                btn.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    inject_keyboard_input(keyCode, true);
+                }, { passive: false });
+                
+                // タッチ終了時：Wasm側のBox64（Win32）へ「キー解除(False)」を通知
+                btn.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    inject_keyboard_input(keyCode, false);
+                }, { passive: false });
+            });
+            
+            // 起動成功後にゲームパッドを表示
+            document.getElementById('gamepad-container').style.display = 'block';
+        }
+
+        // ---------------------------------------------------------------------
+        // Steam ＆ メイン実行
         // ---------------------------------------------------------------------
         let opfsRoot = null;
-        async function setupOPFS() {
-            opfsRoot = await navigator.storage.getDirectory();
-            init_opfs_filesystem();
-        }
-
-        async function downloadSteamAssets() {
-            const statusText = document.getElementById('boot-status');
-            statusText.innerText = "Steam公式網からゲームマニフェストを認証中...";
-            
-            // 本来はsteam-protoで取得したトークンを使い、公式CDNの暗号化チャンク（AppID: 1706130）をFetchします
-            // ここではスマホのOPFSストレージ内に直接展開するバイパスをシミュレート
-            try {
-                statusText.innerText = "ゲームコアバイナリ (x86_64 .exe) をOPFSへ展開中...";
-                const exeFileHandle = await opfsRoot.getFileHandle("EscapeTheBackrooms.exe", { create: true });
-                const writable = await exeFileHandle.createWritable();
-                
-                // ダミーのx86_64 PEヘッダーバイナリ（本番環境ではCDNの生データが入る）
-                const dummyExeData = new Uint8Array([0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00]); 
-                await writable.write(dummyExeData);
-                await writable.close();
-                
-                statusText.innerText = "全アセットの同期完了。JITコアへ制御を委譲します。";
-                logToHUD("Steam AppID 1706130: 正常マウント完了");
-            } catch (err) {
-                window.js_report_emulator_error(501, `Steamデータ格納失敗: ${err.message}`);
-            }
-        }
-
-        function renderLoop() {
-            apply_fsr_upscale();
-            requestAnimationFrame(renderLoop);
-        }
-
-        // 起動ボタンの配線
-        document.getElementById('boot-button').addEventListener('click', async () => {
-            startSurvivalAudioLoop();
-            await downloadSteamAssets();
-            
-            // OPFSから展開された .exe の名前を渡して、Rust側のBox64/FEXコアを点火！
-            boot_game_exe("EscapeTheBackrooms.exe");
-            
-            // オーバーレイを消してWebGPUの画面へ移行
-            document.getElementById('boot-overlay').style.display = 'none';
-            requestAnimationFrame(renderLoop);
-        });
-
         async function run() {
-            await init();
-            init_emulator_core(); 
-            await setupOPFS(); 
-            console.log("System Initialized");
+            await init(); init_emulator_core(); 
+            opfsRoot = await navigator.storage.getDirectory(); init_opfs_filesystem();
+            
+            document.getElementById('boot-button').addEventListener('click', async () => {
+                startSurvivalAudioLoop();
+                // エミュレータへのダミーEXEマウント
+                const file = await opfsRoot.getFileHandle("EscapeTheBackrooms.exe", { create: true });
+                const writable = await file.createWritable(); await writable.write(new Uint8Array([0x4D, 0x5A])); await writable.close();
+                
+                boot_game_exe("EscapeTheBackrooms.exe");
+                setupVirtualGamepad(); // ゲームパッド有効化
+                
+                document.getElementById('boot-overlay').style.display = 'none';
+                setInterval(apply_fsr_upscale, 16); // 60FPS描画駆動
+            });
         }
         run();
     </script>
